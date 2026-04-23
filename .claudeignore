@@ -1,0 +1,10 @@
+.env
+.env.*
+node_modules/
+target/
+*.lock
+dist/
+build/
+*.pem
+*.key
+pnpm-lock.yaml

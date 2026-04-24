@@ -4,6 +4,16 @@ A Jarvis-style always-on desktop assistant. Say the wake word and Nova activates
 
 ---
 
+## Install (End Users)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AxonStack/Cortex-Nova/main/install.sh | bash
+```
+
+This installs the latest release package for your Linux system (`.deb` when available, otherwise AppImage) and registers the desktop app icon.
+
+---
+
 ## What It Can Do
 
 | You say | Nova does |
@@ -188,6 +198,8 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev librsvg2-dev x
 ---
 
 ## Running the App
+
+From source (developer setup):
 
 ### Local machine (macOS / Windows / Linux desktop)
 ```bash

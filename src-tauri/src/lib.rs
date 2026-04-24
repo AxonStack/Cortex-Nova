@@ -1,5 +1,6 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,101 @@ struct OAuthServer(Mutex<Option<TcpListener>>);
 fn extended_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let current = std::env::var("PATH").unwrap_or_default();
-    format!("{home}/.npm/bin:{home}/.local/bin:/usr/local/bin:/usr/bin:/bin:{current}")
+    let mut parts = vec![
+        format!("{home}/.npm/bin"),
+        format!("{home}/.npm-global/bin"),
+        format!("{home}/.local/bin"),
+        format!("{home}/.local/share/pnpm"),
+        format!("{home}/.volta/bin"),
+        format!("{home}/.yarn/bin"),
+        format!("{home}/.config/yarn/global/node_modules/.bin"),
+        "/usr/local/bin".into(),
+        "/usr/bin".into(),
+        "/bin".into(),
+    ];
+
+    if let Ok(v) = std::env::var("PNPM_HOME") {
+        if !v.trim().is_empty() {
+            parts.push(v);
+        }
+    }
+    if let Ok(v) = std::env::var("VOLTA_HOME") {
+        if !v.trim().is_empty() {
+            parts.push(format!("{v}/bin"));
+        }
+    }
+    if let Ok(v) = std::env::var("NPM_CONFIG_PREFIX") {
+        if !v.trim().is_empty() {
+            parts.push(format!("{v}/bin"));
+        }
+    }
+
+    parts.push(current);
+    parts.join(":")
+}
+
+fn resolve_cli_path(cli: &str) -> Option<String> {
+    let path = extended_path();
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    let candidates = [
+        format!("{home}/.npm/bin/{cli}"),
+        format!("{home}/.npm-global/bin/{cli}"),
+        format!("{home}/.local/bin/{cli}"),
+        format!("{home}/.local/share/pnpm/{cli}"),
+        format!("{home}/.volta/bin/{cli}"),
+        format!("/usr/local/bin/{cli}"),
+        format!("/usr/bin/{cli}"),
+    ];
+
+    for candidate in candidates {
+        let p = PathBuf::from(&candidate);
+        if p.exists() {
+            return Some(candidate);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    let which = "where";
+    #[cfg(not(target_os = "windows"))]
+    let which = "which";
+
+    if let Ok(output) = std::process::Command::new(which)
+        .arg(cli)
+        .env("PATH", &path)
+        .output()
+    {
+        if output.status.success() {
+            let found = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_string());
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Fallback: ask a login shell, which picks up shell profile PATH customizations.
+        if let Ok(output) = std::process::Command::new("sh")
+            .args(["-lc", &format!("command -v {cli}")])
+            .env("PATH", &path)
+            .output()
+        {
+            if output.status.success() {
+                let found = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .to_string();
+                if !found.is_empty() {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Percent-decode a URL query string value (no external deps).
@@ -227,34 +322,30 @@ fn speech_api_supported() -> bool {
 /// Check whether a CLI tool is on the PATH.
 #[tauri::command]
 fn check_cli_available(cli: String) -> bool {
-    let path = extended_path();
-    #[cfg(target_os = "windows")]
-    let which = "where";
-    #[cfg(not(target_os = "windows"))]
-    let which = "which";
-    std::process::Command::new(which)
-        .arg(&cli)
-        .env("PATH", &path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    resolve_cli_path(&cli).is_some()
 }
 
 /// Run a CLI AI tool and return its text response.
 #[tauri::command]
 fn ask_via_cli(cli: String, prompt: String) -> Result<String, String> {
     let path = extended_path();
+    let cli_path = resolve_cli_path(&cli).ok_or_else(|| match cli.as_str() {
+        "claude" => "claude not found. Install: npm i -g @anthropic-ai/claude-code".to_string(),
+        "codex" => "codex not found. Install: npm i -g @openai/codex".to_string(),
+        _ => format!("Unknown CLI: {cli}"),
+    })?;
+
     let output = match cli.as_str() {
-        "claude" => std::process::Command::new("claude")
+        "claude" => std::process::Command::new(&cli_path)
             .args(["--print", &prompt])
             .env("PATH", &path)
             .output()
-            .map_err(|e| format!("claude not found. Install: npm i -g @anthropic-ai/claude-code\nError: {e}"))?,
-        "codex" => std::process::Command::new("codex")
+            .map_err(|e| format!("Failed to run {cli} at `{cli_path}`: {e}"))?,
+        "codex" => std::process::Command::new(&cli_path)
             .args(["--quiet", "--approval-policy=auto", &prompt])
             .env("PATH", &path)
             .output()
-            .map_err(|e| format!("codex not found. Install: npm i -g @openai/codex\nError: {e}"))?,
+            .map_err(|e| format!("Failed to run {cli} at `{cli_path}`: {e}"))?,
         _ => return Err(format!("Unknown CLI: {cli}")),
     };
 

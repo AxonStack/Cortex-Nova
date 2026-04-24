@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release:
     strategy:
@@ -48,13 +51,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libssl-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev
+          if ! sudo apt-get install -y libwebkit2gtk-4.1-dev; then
+            sudo apt-get install -y libwebkit2gtk-4.0-dev
+          fi
 
       - name: Install frontend dependencies
         run: pnpm install

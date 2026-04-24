@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useNovaStore } from "../store/novaStore";
 import type { AIProvider } from "../store/novaStore";
 import { fetchOllamaModels, checkCLI } from "../lib/providerClient";
-import { loginWithAnthropic, loginWithOpenAI, canUseOAuthLogin } from "../lib/oauth";
 import { invoke } from "@tauri-apps/api/core";
 
 // ── Provider registry ─────────────────────────────────────────────────────────
@@ -13,7 +12,7 @@ interface ProviderOption {
   name: string;
   tag: string;
   description: string;
-  category: "oauth" | "cli" | "local";
+  category: "key" | "cli" | "local";
   cliName?: "claude" | "codex";
   installCmd?: string;
   authCmd?: string;
@@ -23,16 +22,16 @@ const PROVIDERS: ProviderOption[] = [
   {
     id: "anthropic",
     name: "Anthropic",
-    tag: "Login",
-    category: "oauth",
-    description: "Sign in with your Anthropic account. Browser opens — no key to paste.",
+    tag: "API Key",
+    category: "key",
+    description: "Paste your Anthropic API key.",
   },
   {
     id: "openai",
     name: "OpenAI",
-    tag: "Login",
-    category: "oauth",
-    description: "Sign in with your OpenAI account. Browser opens — no key to paste.",
+    tag: "API Key",
+    category: "key",
+    description: "Paste your OpenAI API key.",
   },
   {
     id: "claude_cli",
@@ -64,126 +63,61 @@ const PROVIDERS: ProviderOption[] = [
 ];
 
 const CAT_LABEL: Record<ProviderOption["category"], string> = {
-  oauth: "Sign in with browser",
+  key: "Use API key",
   cli:   "Re-use CLI session",
   local: "Free / local",
 };
 
-// ── OAuth panel ───────────────────────────────────────────────────────────────
+// ── API key panel ─────────────────────────────────────────────────────────────
 
-type OAuthStep = "idle" | "waiting" | "done" | "error";
-
-function OAuthPanel({ provider, onSave }: { provider: ProviderOption; onSave: (token: string) => void }) {
-  const [step, setStep] = useState<OAuthStep>("idle");
+function APIKeyPanel({ provider, onSave }: { provider: ProviderOption; onSave: (token: string) => void }) {
+  const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState("");
-  const [accessToken, setAccessToken] = useState("");
 
   const label = provider.id === "anthropic" ? "Anthropic" : "OpenAI";
-  const url   = provider.id === "anthropic" ? "claude.ai" : "platform.openai.com";
-  const oauthSupported = canUseOAuthLogin();
+  const placeholder = provider.id === "anthropic" ? "sk-ant-..." : "sk-...";
 
-  async function handleLogin() {
-    if (!oauthSupported) {
-      setStep("error");
-      setError("OAuth login requires the Tauri desktop runtime. Launch Nova with `npm run tauri:dev`, or use CLI login instead.");
+  function handleSave() {
+    const token = apiKey.trim();
+    if (!token) {
+      setError("Please enter your API key.");
       return;
     }
-    setStep("waiting");
     setError("");
-    try {
-      const token = provider.id === "anthropic"
-        ? await loginWithAnthropic()
-        : await loginWithOpenAI();
-      setAccessToken(token.accessToken);
-      setPreview(token.accessToken.slice(0, 14) + "…");
-      setStep("done");
-      onSave(token.accessToken);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setStep("error");
-    }
+    onSave(token);
   }
 
   return (
     <div className="space-y-3">
-      {/* How it works */}
       <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-4 py-4">
-        <div className="text-[9px] tracking-[0.3em] uppercase text-black/40 dark:text-white/30 mb-3">How it works</div>
-        <div className="space-y-2">
-          {[
-            `Click the button below`,
-            `Browser opens to ${url}`,
-            `Log in with your ${label} account`,
-            `Nova captures the token — nothing to copy`,
-          ].map((line, i) => (
-            <div key={i} className="flex items-start gap-2.5">
-              <span className="text-[10px] font-bold text-black/30 dark:text-white/25 w-4 shrink-0 mt-0.5">{i + 1}</span>
-              <span className="text-[12px] text-black/65 dark:text-white/55">{line}</span>
-            </div>
-          ))}
+        <div className="text-[9px] tracking-[0.3em] uppercase text-black/40 dark:text-white/30 mb-2">
+          {label} API Key
+        </div>
+        <input
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={placeholder}
+          className="w-full bg-transparent text-[13px] text-black dark:text-[#e8e8e8] placeholder-black/30 dark:placeholder-white/25 outline-none tracking-wide"
+        />
+        <div className="mt-3 text-[10px] text-black/45 dark:text-white/35 leading-relaxed">
+          OAuth is temporarily disabled because provider callbacks are rejecting third-party app IDs.
+          Use API key or CLI login for stable setup.
         </div>
       </div>
 
-      {/* Login button */}
-      {step !== "done" && (
-        <button
-          onClick={handleLogin}
-          disabled={step === "waiting" || !oauthSupported}
-          className={`w-full rounded-[14px] py-3.5 text-[12px] tracking-[0.2em] uppercase font-bold border transition-all
-            ${step === "waiting" || !oauthSupported
-              ? "border-black/20 dark:border-white/10 text-black/30 dark:text-white/25 cursor-not-allowed bg-transparent"
-              : "border-black dark:border-[#e8e8e8] bg-black dark:bg-[#e8e8e8] text-white dark:text-black hover:opacity-80"
-            }`}
-        >
-          {step === "waiting" ? (
-            <span className="flex items-center justify-center gap-2.5">
-              <span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
-              Waiting for browser…
-            </span>
-          ) : !oauthSupported ? (
-            "Desktop Runtime Required"
-          ) : (
-            `Login with ${label} →`
-          )}
-        </button>
-      )}
-
-      {step === "waiting" && (
-        <div className="text-[10px] text-black/40 dark:text-white/30 text-center tracking-wide">
-          Complete login in your browser. Nova is listening on localhost.
+      {error && (
+        <div className="rounded-[14px] border border-red-500/40 bg-red-500/10 px-4 py-3 text-[11px] text-red-700 dark:text-red-300 tracking-wide">
+          {error}
         </div>
       )}
 
-      {step === "done" && (
-        <>
-          <div className="rounded-[14px] border border-green-600/40 bg-green-500/10 px-4 py-3">
-            <div className="text-[9px] tracking-widest uppercase text-green-700 dark:text-green-400 font-bold mb-1">✓ Authenticated</div>
-            <div className="text-[11px] text-green-800 dark:text-green-300 font-mono">{preview}</div>
-          </div>
-          <button
-            onClick={() => onSave(accessToken)}
-            className="w-full rounded-[14px] border border-black dark:border-[#e8e8e8] bg-black dark:bg-[#e8e8e8] text-white dark:text-black py-3 text-[11px] tracking-[0.2em] uppercase font-bold hover:opacity-80 transition-all"
-          >
-            Start Cortex Nova →
-          </button>
-        </>
-      )}
-
-      {step === "error" && (
-        <>
-          <div className="rounded-[14px] border border-red-500/40 bg-red-500/10 px-4 py-3">
-            <div className="text-[9px] tracking-widest uppercase text-red-600 dark:text-red-400 font-bold mb-1.5">✗ Login failed</div>
-            <div className="text-[11px] text-red-700 dark:text-red-300 font-mono break-all leading-relaxed">{error}</div>
-          </div>
-          <button
-            onClick={handleLogin}
-            className="w-full rounded-[14px] border border-black/30 dark:border-white/20 py-2.5 text-[10px] tracking-widest uppercase hover:border-black dark:hover:border-white/50 transition-all text-black/60 dark:text-white/50"
-          >
-            Try again
-          </button>
-        </>
-      )}
+      <button
+        onClick={handleSave}
+        className="w-full rounded-[14px] border border-black dark:border-[#e8e8e8] bg-black dark:bg-[#e8e8e8] text-white dark:text-black py-3 text-[11px] tracking-[0.2em] uppercase font-bold hover:opacity-80 transition-all"
+      >
+        Save and Start →
+      </button>
     </div>
   );
 }
@@ -470,7 +404,7 @@ export function SetupWizard() {
                     Choose how to connect
                   </div>
 
-                  {(["oauth", "cli", "local"] as const).map((cat) => {
+                  {(["key", "cli", "local"] as const).map((cat) => {
                     const group = PROVIDERS.filter((p) => p.category === cat);
                     return (
                       <div key={cat} className="mb-4">
@@ -533,8 +467,8 @@ export function SetupWizard() {
                     </span>
                   </div>
 
-                  {provider.category === "oauth" && (
-                    <OAuthPanel provider={provider} onSave={saveOAuth} />
+                  {provider.category === "key" && (
+                    <APIKeyPanel provider={provider} onSave={saveOAuth} />
                   )}
                   {provider.category === "cli" && (
                     <CLIPanel provider={provider} onSave={saveCLI} />

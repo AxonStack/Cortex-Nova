@@ -1,6 +1,7 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 // ── Managed state for OAuth redirect server ───────────────────────────────────
 
@@ -70,10 +71,24 @@ fn collect_oauth_callback(state: tauri::State<OAuthServer>) -> Result<String, St
         .take()
         .ok_or("No OAuth server is running — call start_oauth_server first.")?;
 
-    // Accept exactly one connection (the browser redirect)
-    let (mut stream, _) = listener
-        .accept()
-        .map_err(|e| format!("OAuth callback error: {e}"))?;
+    // Accept exactly one connection (the browser redirect).
+    // Use a timeout so invalid OAuth flows don't hang the app.
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("OAuth callback setup error: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(conn) => break conn,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err("OAuth timed out waiting for provider callback. Please try again.".into());
+                }
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            Err(e) => return Err(format!("OAuth callback error: {e}")),
+        }
+    };
 
     // Read the HTTP GET request
     let mut buf = vec![0u8; 8192];

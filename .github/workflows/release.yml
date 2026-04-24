@@ -77,11 +77,11 @@ jobs:
 
             ### Linux one-liner
             ```bash
-            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/install.sh | bash
             ```
 
             ### First launch
             The setup wizard runs automatically on first launch — pick your AI provider (Ollama for free/local, or paste an Anthropic/OpenAI API key).
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}

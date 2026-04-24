@@ -1,42 +1,66 @@
 /**
- * Binary Memory Language Map
+ * Dual-tier memory system:
  *
- * Memories are stored as base64-encoded JSON in localStorage — a compact
- * "binary" envelope. Each memory carries concept tags extracted from the text.
- * A concept map (language map) records how tags co-occur, so recalling by
- * topic surfaces not just exact matches but semantically entangled memories.
+ * TEMP  — sessionStorage, wiped on app restart. Tracks raw activity this session
+ *         (searches, commands, sites visited). Used for behavioral learning.
  *
- * Architecture:
- *   MemoryStore (serialised → base64 → localStorage)
- *   ├── mem[]           — individual memory entries
- *   └── map{}           — concept graph  tag → { related_tag: weight }
+ * UNIVERSAL — localStorage (base64 JSON). Permanent facts + auto-learned
+ *             behavioral patterns. Concept-entanglement graph for fuzzy recall.
  *
- * When storing:  extract tags → add entry → update concept graph weights
- * When recalling: extract query tags → expand via concept graph → rank by score
+ * Auto-learning: after every command, the behavior tracker checks whether any
+ * topic has been searched ≥3 times without being stored — if so it's auto-stored
+ * to universal memory with source "auto".
  */
+
+// ── Shared types ─────────────────────────────────────────────────────────────
 
 export interface Memory {
   id: string;
-  ts: number;             // unix ms
-  text: string;           // raw content
-  tags: string[];         // extracted concept tokens
-  weight: number;         // importance 0–1 (user-set or default 0.5)
-  src: "user" | "cmd";    // who wrote this
+  ts: number;
+  text: string;
+  tags: string[];
+  weight: number;
+  src: "user" | "cmd" | "auto";
+  tier: "universal";
 }
 
-/** concept tag → map of { related_tag: co-occurrence weight } */
+export interface TempEntry {
+  id: string;
+  ts: number;
+  type: "search" | "open" | "command" | "research" | "ai";
+  content: string;
+}
+
+export interface BehaviorPattern {
+  topic: string;
+  count: number;
+  firstTs: number;
+  lastTs: number;
+  autoStored: boolean;
+}
+
 type ConceptMap = Record<string, Record<string, number>>;
 
-interface MemoryStore {
-  v: 1;
+interface UniversalStore {
+  v: 2;
   mem: Memory[];
   map: ConceptMap;
+  patterns: BehaviorPattern[];
 }
 
-const STORE_KEY = "cnova:mem";
+interface TempStore {
+  entries: TempEntry[];
+  commandCount: number;
+}
 
-// Common English words that carry no semantic meaning
-const STOP_WORDS = new Set([
+// ── Storage keys ─────────────────────────────────────────────────────────────
+
+const UNIV_KEY = "cnova:mem";
+const TEMP_KEY = "cnova:temp";
+
+// ── Stop words ───────────────────────────────────────────────────────────────
+
+const STOP = new Set([
   "a","an","the","is","are","was","were","be","been","being","have","has",
   "had","do","does","did","will","would","could","should","may","might",
   "shall","can","i","you","he","she","it","we","they","my","your","his",
@@ -45,31 +69,46 @@ const STOP_WORDS = new Set([
   "in","on","at","by","from","with","about","up","out","as","that","this",
   "these","those","not","no","nor","just","also","too","very","more","most",
   "get","got","let","put","say","said","like","know","think","want","need",
-  "make","made","tell","told","go","going","come","came",
+  "make","made","tell","told","go","going","come","came","me","some","any",
 ]);
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
-function load(): MemoryStore {
+function loadUniversal(): UniversalStore {
   try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(atob(raw)) as MemoryStore;
-  } catch { /* fall through to default */ }
-  return { v: 1, mem: [], map: {} };
+    const raw = localStorage.getItem(UNIV_KEY);
+    if (raw) {
+      const parsed = JSON.parse(atob(raw));
+      // Migrate v1 → v2 (add patterns array)
+      if (parsed.v === 1) return { v: 2, mem: parsed.mem ?? [], map: parsed.map ?? {}, patterns: [] };
+      return parsed as UniversalStore;
+    }
+  } catch { /* fall through */ }
+  return { v: 2, mem: [], map: {}, patterns: [] };
 }
 
-function save(store: MemoryStore): void {
-  try {
-    localStorage.setItem(STORE_KEY, btoa(JSON.stringify(store)));
-  } catch { /* storage full — ignore */ }
+function saveUniversal(store: UniversalStore): void {
+  try { localStorage.setItem(UNIV_KEY, btoa(JSON.stringify(store))); } catch { /* full */ }
 }
 
-function extractTags(text: string): string[] {
+function loadTemp(): TempStore {
+  try {
+    const raw = sessionStorage.getItem(TEMP_KEY);
+    if (raw) return JSON.parse(raw) as TempStore;
+  } catch { /* fall through */ }
+  return { entries: [], commandCount: 0 };
+}
+
+function saveTemp(store: TempStore): void {
+  try { sessionStorage.setItem(TEMP_KEY, JSON.stringify(store)); } catch { /* full */ }
+}
+
+export function extractTags(text: string): string[] {
   const tokens = text
     .toLowerCase()
     .replace(/[^a-z0-9 ]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+    .filter((w) => w.length > 2 && !STOP.has(w));
   return [...new Set(tokens)].slice(0, 12);
 }
 
@@ -82,15 +121,91 @@ function updateConceptMap(map: ConceptMap, tags: string[]): void {
   }
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// ── Auto-learning ─────────────────────────────────────────────────────────────
 
-/** Store a new memory. Returns the created entry. */
+/**
+ * After a command/search, check if any topic has appeared ≥3 times without
+ * being auto-stored. If so, write it to universal memory automatically.
+ */
+function autoLearn(content: string, type: TempEntry["type"]): void {
+  if (type !== "search" && type !== "research") return;
+
+  const store = loadUniversal();
+  const tags = extractTags(content);
+  const topic = tags.slice(0, 3).join(" ");
+  if (!topic) return;
+
+  const existing = store.patterns.find((p) => p.topic === topic);
+  if (existing) {
+    existing.count += 1;
+    existing.lastTs = Date.now();
+    if (existing.count >= 3 && !existing.autoStored) {
+      existing.autoStored = true;
+      const entry: Memory = {
+        id: crypto.randomUUID(),
+        ts: Date.now(),
+        text: `User frequently researches: ${content}`,
+        tags,
+        weight: 0.7,
+        src: "auto",
+        tier: "universal",
+      };
+      store.mem.push(entry);
+      updateConceptMap(store.map, tags);
+    }
+  } else {
+    store.patterns.push({ topic, count: 1, firstTs: Date.now(), lastTs: Date.now(), autoStored: false });
+  }
+
+  saveUniversal(store);
+}
+
+// ── TEMP MEMORY API ──────────────────────────────────────────────────────────
+
+/** Log a session activity to temp memory. */
+export function trackActivity(type: TempEntry["type"], content: string): void {
+  const store = loadTemp();
+  store.entries.unshift({
+    id: crypto.randomUUID(),
+    ts: Date.now(),
+    type,
+    content,
+  });
+  store.entries = store.entries.slice(0, 100); // keep last 100
+  store.commandCount += 1;
+  saveTemp(store);
+  autoLearn(content, type);
+}
+
+/** All temp entries this session, newest first. */
+export function getTempMemory(): TempEntry[] {
+  return loadTemp().entries;
+}
+
+/** Command count this session. */
+export function sessionCommandCount(): number {
+  return loadTemp().commandCount;
+}
+
+/** Recent searches this session. */
+export function getRecentSearches(limit = 5): TempEntry[] {
+  return loadTemp().entries.filter((e) => e.type === "search" || e.type === "research").slice(0, limit);
+}
+
+/** Recent sites opened this session. */
+export function getRecentSites(limit = 5): TempEntry[] {
+  return loadTemp().entries.filter((e) => e.type === "open").slice(0, limit);
+}
+
+// ── UNIVERSAL MEMORY API ──────────────────────────────────────────────────────
+
+/** Store a permanent memory. */
 export function remember(
   text: string,
   src: Memory["src"] = "user",
   weight = 0.5,
 ): Memory {
-  const store = load();
+  const store = loadUniversal();
   const tags = extractTags(text);
   const entry: Memory = {
     id: crypto.randomUUID(),
@@ -99,80 +214,76 @@ export function remember(
     tags,
     weight,
     src,
+    tier: "universal",
   };
   store.mem.push(entry);
   updateConceptMap(store.map, tags);
-  save(store);
+  saveUniversal(store);
   return entry;
 }
 
 /**
- * Recall memories relevant to a query.
- * Uses the concept map to expand tag search beyond exact matches.
+ * Recall universal memories relevant to a query via concept-entanglement graph.
  */
 export function recall(query: string, limit = 5): Memory[] {
-  const store = load();
+  const store = loadUniversal();
   if (!store.mem.length) return [];
 
   const qTags = extractTags(query);
   if (!qTags.length) return store.mem.slice(-limit).reverse();
 
-  // Expand query tags through the concept map
   const expanded = new Map<string, number>();
   for (const tag of qTags) {
     expanded.set(tag, 1.0);
     const linked = store.map[tag] ?? {};
     for (const [rel, w] of Object.entries(linked)) {
-      // Related concepts contribute at 40% of their co-occurrence weight
       expanded.set(rel, Math.max(expanded.get(rel) ?? 0, w * 0.4));
     }
   }
 
-  const scored = store.mem.map((m) => {
-    let score = 0;
-    for (const tag of m.tags) score += expanded.get(tag) ?? 0;
-    score *= m.weight; // importance scales the score
-    return { m, score };
-  });
-
-  return scored
+  return store.mem
+    .map((m) => {
+      let score = 0;
+      for (const tag of m.tags) score += expanded.get(tag) ?? 0;
+      return { m, score: score * m.weight };
+    })
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((x) => x.m);
 }
 
-/** Remove memories whose tags or text match the query. Returns count deleted. */
+/** Delete memories matching a query. Returns count removed. */
 export function forget(query: string): number {
-  const store = load();
+  const store = loadUniversal();
   const qTags = extractTags(query);
   const lower = query.toLowerCase();
   const before = store.mem.length;
   store.mem = store.mem.filter(
-    (m) =>
-      !m.tags.some((t) => qTags.includes(t)) &&
-      !m.text.toLowerCase().includes(lower),
+    (m) => !m.tags.some((t) => qTags.includes(t)) && !m.text.toLowerCase().includes(lower),
   );
-  save(store);
+  saveUniversal(store);
   return before - store.mem.length;
 }
 
-/** All stored memories, newest first. */
+/** All universal memories, newest first. */
 export function getAllMemories(): Memory[] {
-  return load().mem.slice().reverse();
+  return loadUniversal().mem.slice().reverse();
 }
 
-/** The full concept co-occurrence graph. */
+/** Auto-learned behavioral patterns. */
+export function getBehaviorPatterns(): BehaviorPattern[] {
+  return loadUniversal().patterns.sort((a, b) => b.count - a.count);
+}
+
 export function getConceptMap(): ConceptMap {
-  return load().map;
+  return loadUniversal().map;
 }
 
-/** How many memories are stored. */
 export function memoryCount(): number {
-  return load().mem.length;
+  return loadUniversal().mem.length;
 }
 
-/** Erase everything. */
 export function clearAllMemories(): void {
-  save({ v: 1, mem: [], map: {} });
+  saveUniversal({ v: 2, mem: [], map: {}, patterns: [] });
 }

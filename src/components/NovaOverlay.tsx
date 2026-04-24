@@ -177,18 +177,23 @@ export function NovaChatInterface({
   const cfg = providerConfig;
   const isDark = theme === "dark";
 
-  const providerName =
-    cfg.provider === "ollama"
-      ? `OLLAMA / ${cfg.ollamaModel.toUpperCase()}`
-      : cfg.provider === "anthropic"
-      ? "ANTHROPIC / CLAUDE"
-      : "OPENAI / GPT-4O";
+  const providerNameMap: Record<typeof cfg.provider, string> = {
+    ollama: `OLLAMA / ${cfg.ollamaModel.toUpperCase()}`,
+    anthropic: "ANTHROPIC / CLAUDE",
+    openai: "OPENAI / GPT-4O",
+    claude_cli: "CLAUDE CODE CLI",
+    codex_cli: "OPENAI CODEX CLI",
+  };
+  const providerName = providerNameMap[cfg.provider];
 
   const connDot = () => {
     if (cfg.provider === "ollama") {
       if (ollamaConnected === null)
         return <span className="w-2 h-2 rounded-full bg-black/30 dark:bg-white/20 animate-pulse shrink-0" />;
       return <span className={`w-2 h-2 rounded-full shrink-0 ${ollamaConnected ? "bg-green-500" : "bg-red-500"}`} />;
+    }
+    if (cfg.provider === "claude_cli" || cfg.provider === "codex_cli") {
+      return <span className="w-2 h-2 rounded-full shrink-0 bg-green-500" />;
     }
     const hasKey = cfg.apiKey.length > 0;
     return <span className={`w-2 h-2 rounded-full shrink-0 ${hasKey ? "bg-green-500" : "bg-red-500"}`} />;
@@ -197,6 +202,8 @@ export function NovaChatInterface({
   const connLabel =
     cfg.provider === "ollama"
       ? ollamaConnected === null ? "CHECKING…" : ollamaConnected ? "CONNECTED" : "UNREACHABLE"
+      : cfg.provider === "claude_cli" || cfg.provider === "codex_cli"
+      ? "CLI READY"
       : cfg.apiKey.length > 0 ? "KEY SET" : "KEY MISSING";
 
   const micLabel =

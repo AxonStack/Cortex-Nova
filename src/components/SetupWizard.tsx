@@ -127,7 +127,7 @@ function APIKeyPanel({ provider, onSave }: { provider: ProviderOption; onSave: (
 type CLIStatus  = "checking" | "found" | "missing";
 type TestStatus = "idle" | "running" | "ok" | "fail";
 
-function CLIPanel({ provider, onSave }: { provider: ProviderOption; onSave: () => void }) {
+function CLIPanel({ provider, onSave }: { provider: ProviderOption; onSave: (providerId: AIProvider) => void }) {
   const [cliStatus,  setCLIStatus]  = useState<CLIStatus>("checking");
   const [testStatus, setTestStatus] = useState<TestStatus>("idle");
   const [testResult, setTestResult] = useState("");
@@ -224,7 +224,7 @@ function CLIPanel({ provider, onSave }: { provider: ProviderOption; onSave: () =
       )}
 
       <button
-        onClick={onSave}
+        onClick={() => onSave(provider.id)}
         disabled={cliStatus === "missing"}
         className="w-full rounded-[14px] border border-black dark:border-[#e8e8e8] bg-black dark:bg-[#e8e8e8] text-white dark:text-black py-3 text-[11px] tracking-[0.2em] uppercase font-bold hover:opacity-80 transition-all disabled:opacity-20 disabled:cursor-not-allowed"
       >
@@ -365,9 +365,8 @@ export function SetupWizard() {
     saveProviderConfig({ provider: selected, apiKey: token, ollamaModel: "", ollamaUrl: "" });
   }
 
-  function saveCLI() {
-    if (!selected) return;
-    saveProviderConfig({ provider: selected, apiKey: "", ollamaModel: "", ollamaUrl: "" });
+  function saveCLI(providerId: AIProvider) {
+    saveProviderConfig({ provider: providerId, apiKey: "", ollamaModel: "", ollamaUrl: "" });
   }
 
   function saveOllama(model: string, url: string) {

@@ -49,7 +49,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   "aborted":             "", // silent — we caused this intentionally
 };
 
-export function useVoiceListener() {
+export function useVoiceListener(backgroundListening: boolean) {
   const wakeRef  = useRef<SpeechRecognition | null>(null);
   const cmdRef   = useRef<SpeechRecognition | null>(null);
   const modeRef  = useRef<"wake" | "command" | "off">("off");
@@ -90,8 +90,10 @@ export function useVoiceListener() {
         const hit = (isFinal && hasWakeWord && conf >= CONFIDENCE_THRESHOLD)
                  || (!isFinal && hasWakeWord);
         if (hit) {
+          modeRef.current = "command";
           wakeRef.current = null;
           r.abort();
+          setTranscript("");
           showOverlay();
           // Bring the window to front so the user sees it activate
           try { void getCurrentWindow().setFocus(); } catch { /* not in Tauri */ }
@@ -104,7 +106,8 @@ export function useVoiceListener() {
     r.onerror = (e: SpeechRecognitionErrorEvent) => {
       wakeRef.current = null;
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        setVoiceSupported(false);
+        const msg = ERROR_MESSAGES[e.error] ?? "Speech recognition is blocked.";
+        if (msg) setError(msg);
         modeRef.current = "off";
         return;
       }
@@ -124,7 +127,7 @@ export function useVoiceListener() {
 
     try { r.start(); } catch { /* ignore if already started */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showOverlay]);
+  }, [showOverlay, setError, setTranscript]);
 
   // ── Command listener ──────────────────────────────────────────────────
   const startCommand = useCallback((mode: "single" | "hold" = "single") => {
@@ -185,6 +188,7 @@ export function useVoiceListener() {
       cmdRef.current.abort();
       cmdRef.current = null;
     }
+    modeRef.current = "off";
   }, []);
 
   // ── Public: resume wake word after overlay closes ─────────────────────
@@ -198,10 +202,14 @@ export function useVoiceListener() {
       clearTimeout(restartRef.current);
       restartRef.current = null;
     }
+    if (!backgroundListening) {
+      modeRef.current = "off";
+      return;
+    }
     modeRef.current = "wake";
     // Small delay so Chrome fully releases mic from command session
     restartRef.current = setTimeout(() => startWakeWord(), 200);
-  }, [startWakeWord]);
+  }, [backgroundListening, startWakeWord]);
 
   // ── Public: stop everything ───────────────────────────────────────────
   const stopAll = useCallback(() => {
@@ -215,11 +223,14 @@ export function useVoiceListener() {
 
   // ── Boot ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (voiceSupported !== true) return;
+    if (voiceSupported !== true || !backgroundListening) {
+      stopAll();
+      return;
+    }
     modeRef.current = "wake";
     startWakeWord();
     return () => stopAll();
-  }, [voiceSupported, startWakeWord, stopAll]);
+  }, [voiceSupported, backgroundListening, startWakeWord, stopAll]);
 
   return { voiceSupported, startCommandListening, stopCommandListening, resumeWakeWord, stopAll };
 }

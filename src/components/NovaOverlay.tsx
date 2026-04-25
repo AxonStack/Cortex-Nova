@@ -12,8 +12,10 @@ import type { ActionLogEntry, PlanStep } from "../store/novaStore";
 interface NovaChatInterfaceProps {
   isHoldingSpace: boolean;
   voiceSupported: boolean | null;
+  backgroundListening: boolean;
   ollamaConnected: boolean | null;
   onSubmitText: (text: string) => void;
+  onToggleBackgroundListening: () => void;
   onClearChat: () => void;
   onResetSetup: () => void;
 }
@@ -127,8 +129,10 @@ function PlanOverlay() {
 export function NovaChatInterface({
   isHoldingSpace,
   voiceSupported,
+  backgroundListening,
   ollamaConnected,
   onSubmitText,
+  onToggleBackgroundListening,
   onClearChat,
   onResetSetup,
 }: NovaChatInterfaceProps) {
@@ -208,6 +212,7 @@ export function NovaChatInterface({
 
   const micLabel =
     isHoldingSpace ? "Listening…"
+    : backgroundListening && status === "idle" ? 'Say "chop chop cortex"'
     : status === "processing" ? "Processing…"
     : status === "speaking" ? "Speaking…"
     : null;
@@ -246,7 +251,21 @@ export function NovaChatInterface({
               <span className="text-[10px] tracking-[0.15em] uppercase text-black/35 dark:text-white/30">— {connLabel}</span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={backgroundListening}
+                onClick={onToggleBackgroundListening}
+                className={`flex items-center gap-2 text-[10px] tracking-[0.16em] uppercase px-3 py-1.5 border rounded-full transition-colors ${
+                  backgroundListening
+                    ? "border-green-600/70 bg-green-500/15 text-green-700 dark:text-green-300"
+                    : "border-black/30 dark:border-[#3a3a3a] text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${backgroundListening ? "bg-green-500 animate-pulse" : "bg-black/25 dark:bg-white/25"}`} />
+                {backgroundListening ? "BG ON" : "BG OFF"}
+              </button>
               <StatusIndicator status={status} />
               <button
                 onClick={toggleTheme}
@@ -281,7 +300,11 @@ export function NovaChatInterface({
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] tracking-[0.25em] uppercase text-black/60 dark:text-white/50">Live Session</span>
                   <span className="text-[10px] tracking-[0.2em] uppercase text-black/40 dark:text-white/35">
-                    {voiceSupported ? "MIC READY" : "TEXT ONLY"}
+                    {backgroundListening
+                      ? "WAKE READY"
+                      : voiceSupported
+                      ? "MIC READY"
+                      : "TEXT ONLY"}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -301,8 +324,10 @@ export function NovaChatInterface({
               <div className="mt-3 flex-1 min-h-0 overflow-auto space-y-3 pr-1">
                 {messages.length === 0 && !errorMessage && (
                   <div className="rounded-[14px] border border-dashed border-black/30 dark:border-white/15 px-4 py-4 text-[12px] tracking-[0.15em] uppercase text-black/35 dark:text-white/30 text-center mt-6">
-                    {voiceSupported
-                      ? 'Hold SPACE to talk — or type below. Try "get me articles about Iran US war"'
+                    {backgroundListening
+                      ? 'Listening in background. Say "chop chop cortex" to wake Nova.'
+                      : voiceSupported
+                      ? 'Turn BG ON for wake word, hold SPACE to talk, or type below.'
                       : 'Type a command below. Try "get me articles about Iran US war"'}
                   </div>
                 )}
@@ -362,9 +387,9 @@ export function NovaChatInterface({
                 </div>
                 <div className="mt-2.5 pt-2 border-t border-black/10 dark:border-white/10 flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${isBusy ? "bg-yellow-500 animate-pulse" : activePlan ? "bg-blue-500 animate-pulse" : "bg-green-500"}`} />
+                    <span className={`w-1.5 h-1.5 rounded-full ${isBusy ? "bg-yellow-500 animate-pulse" : activePlan ? "bg-blue-500 animate-pulse" : backgroundListening ? "bg-green-500 animate-pulse" : "bg-black/30 dark:bg-white/25"}`} />
                     <span className="text-[9px] uppercase tracking-wide text-black/40 dark:text-white/30">
-                      {activePlan ? "RESEARCHING" : isBusy ? status.toUpperCase() : "IDLE"}
+                      {activePlan ? "RESEARCHING" : isBusy ? status.toUpperCase() : backgroundListening ? "BG LEARNING" : "IDLE"}
                     </span>
                   </div>
                   {avgLatency !== null && (

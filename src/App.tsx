@@ -10,7 +10,6 @@ import { speak } from "./lib/speechSynthesis";
 import { trackActivity } from "./lib/memory";
 
 function NovaApp() {
-  const { voiceSupported, startCommandListening, stopCommandListening, resumeWakeWord } = useVoiceListener();
   const [isHoldingSpace, setIsHoldingSpace] = useState(false);
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const holdSpaceRef = useRef(false);
@@ -20,11 +19,51 @@ function NovaApp() {
     setStatus, setTranscript, setResponse,
     addMessage, clearMessages, resetSetup, theme,
     addActionLog, setPlan, updatePlanStep, clearPlan,
+    backgroundListening, setBackgroundListening, setError,
   } = useNovaStore();
+  const { voiceSupported, startCommandListening, stopCommandListening, resumeWakeWord, stopAll } =
+    useVoiceListener(backgroundListening);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  async function toggleBackgroundListening() {
+    if (backgroundListening) {
+      stopAll();
+      setBackgroundListening(false);
+      addActionLog({ ts: Date.now(), type: "memory", label: "Background listening paused" });
+      trackActivity("command", "Background listening paused");
+      return;
+    }
+
+    if (voiceSupported === false) {
+      setError("Voice recognition is not available in this installed app environment. Use text input or run in a Chromium browser with microphone access.");
+      return;
+    }
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("getUserMedia unavailable");
+      }
+      const stream = await navigator.mediaDevices?.getUserMedia?.({ audio: true });
+      stream?.getTracks().forEach((track) => track.stop());
+    } catch {
+      setError("Microphone access denied. Allow microphone permission, then turn background listening on again.");
+      return;
+    }
+
+    const prompt = 'Background learning is on. Say "chop chop cortex" to wake me up.';
+    setBackgroundListening(true);
+    setError(null);
+    setStatus("idle");
+    setTranscript("");
+    setResponse(prompt);
+    addMessage({ role: "ai", text: prompt });
+    addActionLog({ ts: Date.now(), type: "memory", label: "Background learning enabled. Wake phrase: chop chop cortex" });
+    trackActivity("command", "Background learning enabled with wake phrase chop chop cortex");
+    speak(prompt);
+  }
 
   // Ollama health check
   useEffect(() => {
@@ -84,6 +123,7 @@ function NovaApp() {
     addMessage({ role: "ai", text: summary });
     speak(summary, () => {
       setStatus("idle");
+      resumeWakeWord();
       // Keep plan visible for 4 seconds after completion so user can see it
       setTimeout(() => clearPlan(), 4000);
     });
@@ -114,7 +154,10 @@ function NovaApp() {
           addMessage({ role: "ai", text: result.message, latencyMs });
           setResponse(result.message);
           setStatus("speaking");
-          speak(result.message, () => setStatus("idle"));
+          speak(result.message, () => {
+            setStatus("idle");
+            resumeWakeWord();
+          });
 
         } else {
           trackActivity("ai", result.query);
@@ -124,7 +167,10 @@ function NovaApp() {
           addMessage({ role: "ai", text: aiResponse, latencyMs });
           setResponse(aiResponse);
           setStatus("speaking");
-          speak(aiResponse, () => setStatus("idle"));
+          speak(aiResponse, () => {
+            setStatus("idle");
+            resumeWakeWord();
+          });
         }
       } catch (err) {
         useNovaStore.getState().setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -194,8 +240,10 @@ function NovaApp() {
     <NovaChatInterface
       isHoldingSpace={isHoldingSpace}
       voiceSupported={voiceSupported}
+      backgroundListening={backgroundListening}
       ollamaConnected={ollamaConnected}
       onSubmitText={submitText}
+      onToggleBackgroundListening={toggleBackgroundListening}
       onClearChat={clearMessages}
       onResetSetup={resetSetup}
     />

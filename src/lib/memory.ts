@@ -7,8 +7,8 @@
  * UNIVERSAL — localStorage (base64 JSON). Permanent facts + auto-learned
  *             behavioral patterns. Concept-entanglement graph for fuzzy recall.
  *
- * Auto-learning: after every command, the behavior tracker checks whether any
- * topic has been searched ≥3 times without being stored — if so it's auto-stored
+ * Auto-learning: after every activity, the behavior tracker checks whether any
+ * topic has appeared ≥3 times without being stored — if so it's auto-stored
  * to universal memory with source "auto".
  */
 
@@ -124,12 +124,10 @@ function updateConceptMap(map: ConceptMap, tags: string[]): void {
 // ── Auto-learning ─────────────────────────────────────────────────────────────
 
 /**
- * After a command/search, check if any topic has appeared ≥3 times without
+ * After app activity, check if any topic has appeared ≥3 times without
  * being auto-stored. If so, write it to universal memory automatically.
  */
 function autoLearn(content: string, type: TempEntry["type"]): void {
-  if (type !== "search" && type !== "research") return;
-
   const store = loadUniversal();
   const tags = extractTags(content);
   const topic = tags.slice(0, 3).join(" ");
@@ -144,7 +142,9 @@ function autoLearn(content: string, type: TempEntry["type"]): void {
       const entry: Memory = {
         id: crypto.randomUUID(),
         ts: Date.now(),
-        text: `User frequently researches: ${content}`,
+        text: type === "search" || type === "research"
+          ? `User frequently researches: ${content}`
+          : `User frequently does: ${content}`,
         tags,
         weight: 0.7,
         src: "auto",

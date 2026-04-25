@@ -64,6 +64,7 @@ interface NovaState {
   providerConfig: ProviderConfig;
   isSetupComplete: boolean;
   theme: "light" | "dark";
+  backgroundListening: boolean;
 
   setStatus: (status: NovaStatus) => void;
   setTranscript: (transcript: string) => void;
@@ -81,6 +82,7 @@ interface NovaState {
   saveProviderConfig: (config: ProviderConfig) => void;
   resetSetup: () => void;
   toggleTheme: () => void;
+  setBackgroundListening: (enabled: boolean) => void;
 }
 
 export const useNovaStore = create<NovaState>()(
@@ -99,13 +101,14 @@ export const useNovaStore = create<NovaState>()(
       providerConfig: DEFAULT_PROVIDER_CONFIG,
       isSetupComplete: false,
       theme: "light",
+      backgroundListening: false,
 
       setStatus: (status) => set({ status }),
       setTranscript: (transcript) => set({ transcript }),
       setResponse: (response) => set({ response }),
       showOverlay: () => set({ isOverlayVisible: true }),
       hideOverlay: () => set({ isOverlayVisible: false, status: "idle", transcript: "", response: "", messages: [] }),
-      setError: (errorMessage) => set({ errorMessage, status: "error" }),
+      setError: (errorMessage) => set({ errorMessage, ...(errorMessage ? { status: "error" as const } : {}) }),
       reset: () => set({ status: "idle", transcript: "", response: "", errorMessage: null }),
       addMessage: (msg) =>
         set((s) => ({ messages: [...s.messages, { ...msg, id: crypto.randomUUID() }] })),
@@ -131,6 +134,7 @@ export const useNovaStore = create<NovaState>()(
       saveProviderConfig: (config) => set({ providerConfig: config, isSetupComplete: true }),
       resetSetup: () => set({ isSetupComplete: false, providerConfig: DEFAULT_PROVIDER_CONFIG }),
       toggleTheme: () => set((s) => ({ theme: s.theme === "light" ? "dark" : "light" })),
+      setBackgroundListening: (backgroundListening) => set({ backgroundListening }),
     }),
     {
       name: "nova-config",
@@ -138,6 +142,7 @@ export const useNovaStore = create<NovaState>()(
         providerConfig: state.providerConfig,
         isSetupComplete: state.isSetupComplete,
         theme: state.theme,
+        backgroundListening: state.backgroundListening,
       }),
     }
   )

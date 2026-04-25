@@ -1,5 +1,13 @@
 # Nova Voice Assistant — Build Progress
 
+## Direct Install (Users)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AxonStack/Cortex-Nova/main/install.sh | bash
+```
+
+---
+
 ## Environment Setup
 
 ### Rust Installation

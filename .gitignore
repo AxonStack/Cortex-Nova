@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Tauri icon generation creates mobile assets this desktop app does not bundle.
+src-tauri/icons/64x64.png
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

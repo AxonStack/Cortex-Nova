@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import { invoke } from "@tauri-apps/api/core";
 import type { ProviderConfig } from "../store/novaStore";
 import { recall } from "./memory";
 
@@ -56,6 +57,18 @@ async function askOllama(query: string, model: string, baseUrl: string): Promise
   return data.message?.content ?? "I couldn't process that.";
 }
 
+/** Delegate to the Claude Code CLI (`claude --print`). No API key needed. */
+async function askClaudeCLI(query: string): Promise<string> {
+  const fullPrompt = `${SYSTEM_PROMPT}\n\n${query}`;
+  return invoke<string>("ask_via_cli", { cli: "claude", prompt: fullPrompt });
+}
+
+/** Delegate to the OpenAI Codex CLI. No API key needed. */
+async function askCodexCLI(query: string): Promise<string> {
+  const fullPrompt = `${SYSTEM_PROMPT}\n\n${query}`;
+  return invoke<string>("ask_via_cli", { cli: "codex", prompt: fullPrompt });
+}
+
 export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
   try {
     const res = await fetch(`${baseUrl}/api/tags`);
@@ -67,8 +80,16 @@ export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
   }
 }
 
+/** Check if a CLI tool is installed and on the PATH (via Tauri). */
+export async function checkCLI(cli: "claude" | "codex"): Promise<boolean> {
+  try {
+    return await invoke<boolean>("check_cli_available", { cli });
+  } catch {
+    return false;
+  }
+}
+
 export async function askAI(query: string, config: ProviderConfig): Promise<string> {
-  // Prepend relevant memories so the AI has personal context
   const hits = recall(query, 3);
   const ctx = hits.length
     ? `[Memory context]\n${hits.map((m) => `- ${m.text}`).join("\n")}\n\n[Query]\n`
@@ -76,8 +97,10 @@ export async function askAI(query: string, config: ProviderConfig): Promise<stri
   const q = ctx + query;
 
   switch (config.provider) {
-    case "anthropic": return askAnthropic(q, config.apiKey);
-    case "openai":    return askOpenAI(q, config.apiKey);
-    case "ollama":    return askOllama(q, config.ollamaModel, config.ollamaUrl);
+    case "anthropic":  return askAnthropic(q, config.apiKey);
+    case "openai":     return askOpenAI(q, config.apiKey);
+    case "ollama":     return askOllama(q, config.ollamaModel, config.ollamaUrl);
+    case "claude_cli": return askClaudeCLI(q);
+    case "codex_cli":  return askCodexCLI(q);
   }
 }

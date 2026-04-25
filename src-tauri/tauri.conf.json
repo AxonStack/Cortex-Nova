@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "nova",
-  "version": "0.1.0",
-  "identifier": "com.azureuser.nova",
+  "productName": "Cortex Nova",
+  "version": "0.1.6",
+  "identifier": "com.cortexnova.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -35,6 +35,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "shortDescription": "Jarvis-style AI voice assistant for your desktop",
+    "longDescription": "Cortex Nova is an always-on AI voice assistant. Say the wake phrase and Nova activates, listens, and acts — opening apps, searching the web, composing emails, and answering anything with AI.",
+    "category": "Utility",
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libssl3", "xdotool"]
+      }
+    }
   }
 }

@@ -2,6 +2,12 @@
 
 > A practical walkthrough to get both tools running on your system, understand what they can do, and use them effectively for building real projects.
 
+## Cortex Nova Direct Install (Users)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AxonStack/Cortex-Nova/main/install.sh | bash
+```
+
 ---
 
 ## Table of Contents

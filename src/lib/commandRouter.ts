@@ -3,11 +3,21 @@ import { remember, recall, forget } from "./memory";
 
 export type CommandResult =
   | { type: "os_action"; message: string }
-  | { type: "ai_query"; query: string };
+  | { type: "ai_query"; query: string }
+  | { type: "research"; topic: string; steps: ResearchStep[] }
+  | { type: "youtube_play"; query: string };
+
+export interface ResearchStep {
+  id: string;
+  label: string;
+  detail: string;
+  url: string;
+  delayMs: number;
+}
 
 // ── System helpers ────────────────────────────────────────────────────────────
 
-async function openUrl(url: string): Promise<void> {
+export async function openUrl(url: string): Promise<void> {
   try {
     await invoke("open_url", { url });
   } catch {
@@ -43,12 +53,72 @@ const SITE_MAP: Record<string, string> = {
   chatgpt:   "https://chat.openai.com",
 };
 
-// ── Command patterns (order matters — most specific first) ────────────────────
+// ── Research plan builder ─────────────────────────────────────────────────────
+
+function buildResearchPlan(topic: string): ResearchStep[] {
+  const q = encodeURIComponent(topic);
+  const steps: ResearchStep[] = [
+    {
+      id: crypto.randomUUID(),
+      label: "Search Google News",
+      detail: `Searching Google News for "${topic}"`,
+      url: `https://news.google.com/search?q=${q}&hl=en`,
+      delayMs: 0,
+    },
+    {
+      id: crypto.randomUUID(),
+      label: "Find top Reddit discussion",
+      detail: `Reddit — top posts this month about "${topic}"`,
+      url: `https://www.reddit.com/search/?q=${q}&sort=top&t=month`,
+      delayMs: 1800,
+    },
+    {
+      id: crypto.randomUUID(),
+      label: "Open Wikipedia overview",
+      detail: `Wikipedia article for "${topic}"`,
+      url: `https://en.wikipedia.org/w/index.php?search=${q}&ns0=1`,
+      delayMs: 2800,
+    },
+    {
+      id: crypto.randomUUID(),
+      label: "Load highest-rated result",
+      detail: `Google — top article about "${topic}"`,
+      url: `https://www.google.com/search?q=${q}+most+viewed+article&tbs=sbd:1`,
+      delayMs: 3800,
+    },
+  ];
+  return steps;
+}
+
+// ── Command patterns ──────────────────────────────────────────────────────────
 
 const OS_PATTERNS: Array<{
   pattern: RegExp;
   handler: (match: RegExpMatchArray) => Promise<CommandResult>;
 }> = [
+
+  // ── Research / article finder ────────────────────────────────────────────
+  {
+    pattern: /^(?:get me|find|fetch|pull up|show me|search for)(?:\s+some)?\s+(?:articles?|news|info(?:rmation)?|coverage|reports?|results?)\s+(?:about|on|related to|regarding|covering)\s+(.+)/i,
+    handler: async (match) => {
+      const topic = match[1].trim();
+      return { type: "research", topic, steps: buildResearchPlan(topic) };
+    },
+  },
+  {
+    pattern: /^research(?:\s+(?:about|on))?\s+(.+)/i,
+    handler: async (match) => {
+      const topic = match[1].trim();
+      return { type: "research", topic, steps: buildResearchPlan(topic) };
+    },
+  },
+  {
+    pattern: /^(?:what(?:'s| is) (?:happening|going on) with|tell me about|brief me on)\s+(.+)/i,
+    handler: async (match) => {
+      const topic = match[1].trim();
+      return { type: "research", topic, steps: buildResearchPlan(topic) };
+    },
+  },
 
   // ── Memory: remember ────────────────────────────────────────────────────
   {
@@ -78,8 +148,9 @@ const OS_PATTERNS: Array<{
       const n = forget(match[1]);
       return {
         type: "os_action",
-        message: n > 0 ? `Removed ${n} memor${n === 1 ? "y" : "ies"} about "${match[1]}".`
-                       : `Nothing found in memory about "${match[1]}".`,
+        message: n > 0
+          ? `Removed ${n} memor${n === 1 ? "y" : "ies"} about "${match[1]}".`
+          : `Nothing found in memory about "${match[1]}".`,
       };
     },
   },
@@ -102,13 +173,14 @@ const OS_PATTERNS: Array<{
     },
   },
 
-  // ── Media: play on youtube ──────────────────────────────────────────────
+  // ── Media: play / open on youtube → full browser automation ────────────
   {
     pattern: /^play (.+?) on youtube/i,
-    handler: async (match) => {
-      await openUrl(`https://www.youtube.com/results?search_query=${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `Playing "${match[1]}" on YouTube` };
-    },
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^open (.+?) (?:in|on) youtube/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
   // ── Media: play on spotify ──────────────────────────────────────────────
@@ -120,22 +192,16 @@ const OS_PATTERNS: Array<{
     },
   },
 
-  // ── Media: play [song] — defaults to YouTube ────────────────────────────
+  // ── Media: play [song] ──────────────────────────────────────────────────
   {
     pattern: /^play (.+)/i,
-    handler: async (match) => {
-      await openUrl(`https://www.youtube.com/results?search_query=${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `Searching YouTube for "${match[1]}"` };
-    },
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
-  // ── Search: search youtube for ──────────────────────────────────────────
+  // ── Search: youtube ─────────────────────────────────────────────────────
   {
     pattern: /^(?:search youtube for|youtube) (.+)/i,
-    handler: async (match) => {
-      await openUrl(`https://www.youtube.com/results?search_query=${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `YouTube search: "${match[1]}"` };
-    },
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
   // ── Email: compose with body ─────────────────────────────────────────────
@@ -171,7 +237,7 @@ const OS_PATTERNS: Array<{
     },
   },
 
-  // ── Search: search for ──────────────────────────────────────────────────
+  // ── Search: general ─────────────────────────────────────────────────────
   {
     pattern: /^search (?:for )?(.+)/i,
     handler: async (match) => {

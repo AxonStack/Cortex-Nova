@@ -1,5 +1,8 @@
 # Nova — AI Voice Assistant
 
+## Direct Install (Users)
+- `curl -fsSL https://raw.githubusercontent.com/AxonStack/Cortex-Nova/main/install.sh | bash`
+
 ## Stack
 - Tauri 2 (Rust backend + React frontend)
 - TypeScript strict mode + Rust 1.95

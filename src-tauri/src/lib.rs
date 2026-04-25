@@ -4,9 +4,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-// ── Managed state for OAuth redirect server ───────────────────────────────────
+// ── Managed state ─────────────────────────────────────────────────────────────
 
 struct OAuthServer(Mutex<Option<TcpListener>>);
+
+/// Holds the live arecord child process so we can kill it on stop.
+struct RecordingState(Mutex<Option<std::process::Child>>);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -313,6 +316,210 @@ fn mouse_click(x: i32, y: i32) -> Result<(), String> {
     }
 }
 
+/// Launch the system Chrome/Chromium browser as a new window.
+#[tauri::command]
+fn launch_browser() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let candidates = ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"];
+        for bin in candidates {
+            if std::process::Command::new(bin).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err("Chrome/Chromium not found. Install google-chrome or chromium.".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Google Chrome"])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "chrome"])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Bring a window to the foreground by partial title match.
+#[tauri::command]
+fn focus_window(name: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdotool")
+            .args(["search", "--name", &name, "windowactivate", "--sync"])
+            .output()
+            .map(|_| ())
+            .map_err(|e| format!("xdotool not found — install: sudo dnf install xdotool. Error: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(r#"tell application "{name}" to activate"#);
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let ps = format!(r#"(New-Object -ComObject WScript.Shell).AppActivate("{name}")"#);
+        std::process::Command::new("powershell")
+            .args(["-Command", &ps])
+            .output()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Send a key or key combination (e.g. "ctrl+l", "Return", "Tab").
+#[tauri::command]
+fn press_key(keys: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdotool")
+            .args(["key", "--clearmodifiers", &keys])
+            .output()
+            .map(|_| ())
+            .map_err(|e| format!("xdotool not found — install: sudo dnf install xdotool. Error: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Map common keys to osascript key codes
+        let script = match keys.to_lowercase().as_str() {
+            "return" | "enter" => r#"tell application "System Events" to key code 36"#.to_string(),
+            "tab" => r#"tell application "System Events" to key code 48"#.to_string(),
+            "ctrl+l" => r#"tell application "System Events" to keystroke "l" using {command down}"#.to_string(),
+            _ => return Err(format!("Unsupported key on macOS: {keys}")),
+        };
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let wsh_key = match keys.to_lowercase().as_str() {
+            "return" | "enter" => "{ENTER}".to_string(),
+            "tab" => "{TAB}".to_string(),
+            "ctrl+l" => "^l".to_string(),
+            _ => keys.clone(),
+        };
+        let ps = format!(r#"(New-Object -ComObject WScript.Shell).SendKeys("{wsh_key}")"#);
+        std::process::Command::new("powershell")
+            .args(["-Command", &ps])
+            .output()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Start recording microphone audio to /tmp/nova_voice.wav via arecord (Linux).
+#[tauri::command]
+fn start_recording(state: tauri::State<RecordingState>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Kill any existing recording first
+        if let Some(mut old) = state.0.lock().unwrap().take() {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+        let child = std::process::Command::new("arecord")
+            .args(["-f", "S16_LE", "-r", "16000", "-c", "1", "/tmp/nova_voice.wav"])
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("arecord not found — install: sudo dnf install alsa-utils. Error: {e}"))?;
+        *state.0.lock().unwrap() = Some(child);
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err("start_recording is Linux-only".into())
+}
+
+/// Stop arecord and transcribe the captured WAV. Returns the recognised text.
+#[tauri::command]
+fn stop_recording_and_transcribe(
+    state: tauri::State<RecordingState>,
+    openai_key: Option<String>,
+) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Stop the recording process
+        if let Some(mut child) = state.0.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        // Small sleep so the file is fully flushed
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        transcribe_wav("/tmp/nova_voice.wav", openai_key)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err("stop_recording_and_transcribe is Linux-only".into())
+}
+
+fn transcribe_wav(path: &str, openai_key: Option<String>) -> Result<String, String> {
+    if !std::path::Path::new(path).exists() {
+        return Err("Recording file not found — was audio captured?".into());
+    }
+
+    // 1. Try local whisper CLI (pip install openai-whisper)
+    let whisper_output = std::process::Command::new("whisper")
+        .args([path, "--model", "tiny", "--language", "en", "--output_format", "txt", "--output_dir", "/tmp"])
+        .output();
+
+    if let Ok(out) = whisper_output {
+        if out.status.success() {
+            let txt_path = path.replace(".wav", ".txt");
+            if let Ok(text) = std::fs::read_to_string(&txt_path) {
+                let trimmed = text.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed);
+                }
+            }
+        }
+    }
+
+    // 2. OpenAI Whisper API via curl
+    if let Some(key) = openai_key {
+        if !key.is_empty() {
+            let out = std::process::Command::new("curl")
+                .args([
+                    "-s",
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    "-H", &format!("Authorization: Bearer {key}"),
+                    "-F", "model=whisper-1",
+                    "-F", &format!("file=@{path}"),
+                ])
+                .output()
+                .map_err(|e| format!("curl error: {e}"))?;
+
+            if out.status.success() {
+                let json: serde_json::Value = serde_json::from_slice(&out.stdout)
+                    .map_err(|e| format!("Whisper API response parse error: {e}"))?;
+                if let Some(text) = json["text"].as_str() {
+                    let trimmed = text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        return Ok(trimmed);
+                    }
+                }
+                let err_msg = json["error"]["message"].as_str().unwrap_or("Unknown error");
+                return Err(format!("Whisper API: {err_msg}"));
+            }
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(format!("curl failed: {stderr}"));
+        }
+    }
+
+    Err("No transcription method found. Install whisper (pip install openai-whisper) or set an OpenAI API key in setup.".into())
+}
+
 /// Returns false on Linux WebKitGTK which doesn't implement the Web Speech API.
 #[tauri::command]
 fn speech_api_supported() -> bool {
@@ -372,11 +579,17 @@ fn ask_via_cli(cli: String, prompt: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(OAuthServer(Mutex::new(None)))
+        .manage(RecordingState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             open_url,
             type_text,
             mouse_click,
+            launch_browser,
+            focus_window,
+            press_key,
+            start_recording,
+            stop_recording_and_transcribe,
             speech_api_supported,
             check_cli_available,
             ask_via_cli,

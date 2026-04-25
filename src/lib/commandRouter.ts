@@ -4,7 +4,8 @@ import { remember, recall, forget } from "./memory";
 export type CommandResult =
   | { type: "os_action"; message: string }
   | { type: "ai_query"; query: string }
-  | { type: "research"; topic: string; steps: ResearchStep[] };
+  | { type: "research"; topic: string; steps: ResearchStep[] }
+  | { type: "youtube_play"; query: string };
 
 export interface ResearchStep {
   id: string;
@@ -172,13 +173,14 @@ const OS_PATTERNS: Array<{
     },
   },
 
-  // ── Media: play on youtube ──────────────────────────────────────────────
+  // ── Media: play / open on youtube → full browser automation ────────────
   {
     pattern: /^play (.+?) on youtube/i,
-    handler: async (match) => {
-      await openUrl(`https://www.youtube.com/results?search_query=${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `Playing "${match[1]}" on YouTube` };
-    },
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^open (.+?) (?:in|on) youtube/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
   // ── Media: play on spotify ──────────────────────────────────────────────
@@ -193,19 +195,13 @@ const OS_PATTERNS: Array<{
   // ── Media: play [song] ──────────────────────────────────────────────────
   {
     pattern: /^play (.+)/i,
-    handler: async (match) => {
-      await openUrl(`https://www.youtube.com/results?search_query=${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `Searching YouTube for "${match[1]}"` };
-    },
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
   // ── Search: youtube ─────────────────────────────────────────────────────
   {
     pattern: /^(?:search youtube for|youtube) (.+)/i,
-    handler: async (match) => {
-      await openUrl(`https://www.youtube.com/results?search_query=${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `YouTube search: "${match[1]}"` };
-    },
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
   // ── Email: compose with body ─────────────────────────────────────────────

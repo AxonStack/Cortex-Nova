@@ -98,7 +98,9 @@ function PlanOverlay() {
         {/* Header */}
         <div className="px-5 pt-5 pb-3 border-b border-black/15 dark:border-white/10">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-[9px] tracking-[0.3em] uppercase text-black/40 dark:text-white/30">Research Plan</span>
+            <span className="text-[9px] tracking-[0.3em] uppercase text-black/40 dark:text-white/30">
+              {activePlan.type === "youtube_play" ? "YouTube Automation" : "Research Plan"}
+            </span>
             <span className="ml-auto text-[9px] tracking-wide text-black/40 dark:text-white/30 tabular-nums">{doneCount}/{total}</span>
           </div>
           <div className="text-[14px] font-bold text-black dark:text-[#e8e8e8] tracking-wide">{activePlan.title}</div>
@@ -118,7 +120,9 @@ function PlanOverlay() {
         </div>
         {doneCount === total && (
           <div className="px-5 pb-4 text-[11px] tracking-[0.15em] uppercase text-green-600 dark:text-green-400 font-bold">
-            ✓ All sources opened — check your browser
+            {activePlan.type === "youtube_play"
+              ? "✓ Playing on YouTube — enjoy!"
+              : "✓ All sources opened — check your browser"}
           </div>
         )}
       </div>

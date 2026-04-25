@@ -1,6 +1,6 @@
 [package]
 name = "nova"
-version = "0.1.5"
+version = "0.1.6"
 description = "Nova AI Voice Assistant"
 authors = ["you"]
 edition = "2021"

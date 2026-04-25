@@ -49,20 +49,35 @@ const ERROR_MESSAGES: Record<string, string> = {
   "aborted":             "", // silent — we caused this intentionally
 };
 
-export function useVoiceListener(backgroundListening: boolean) {
+export function useVoiceListener(backgroundListening: boolean, openaiKey?: string) {
   const wakeRef  = useRef<SpeechRecognition | null>(null);
   const cmdRef   = useRef<SpeechRecognition | null>(null);
   const modeRef  = useRef<"wake" | "command" | "off">("off");
   const restartRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openaiKeyRef = useRef(openaiKey ?? "");
 
   const [voiceSupported, setVoiceSupported] = useState<boolean | null>(null);
+  // true = arecord available on Linux as fallback STT
+  const [linuxVoiceAvailable, setLinuxVoiceAvailable] = useState<boolean | null>(null);
   const { setStatus, setTranscript, showOverlay, setError, hideOverlay } = useNovaStore();
 
-  // ── Check if this platform supports Speech API ────────────────────────
+  // Keep openaiKey ref in sync without re-running effects
+  useEffect(() => { openaiKeyRef.current = openaiKey ?? ""; }, [openaiKey]);
+
+  // ── Check platform speech support ─────────────────────────────────────
   useEffect(() => {
     invoke<boolean>("speech_api_supported")
-      .then((ok) => setVoiceSupported(ok && !!(window.SpeechRecognition ?? window.webkitSpeechRecognition)))
-      .catch(()  => setVoiceSupported(!!(window.SpeechRecognition ?? window.webkitSpeechRecognition)));
+      .then((ok) => {
+        const webOk = ok && !!(window.SpeechRecognition ?? window.webkitSpeechRecognition);
+        setVoiceSupported(webOk);
+        if (!webOk) {
+          // On Linux WebKitGTK, fall back to arecord-based STT
+          invoke<boolean>("check_cli_available", { cli: "arecord" })
+            .then((has) => setLinuxVoiceAvailable(has))
+            .catch(() => setLinuxVoiceAvailable(false));
+        }
+      })
+      .catch(() => setVoiceSupported(!!(window.SpeechRecognition ?? window.webkitSpeechRecognition)));
   }, []);
 
   const getSR = (): (new () => SpeechRecognition) | null =>
@@ -167,6 +182,14 @@ export function useVoiceListener(backgroundListening: boolean) {
 
   // ── Public: trigger command from Space key ────────────────────────────
   const startCommandListening = useCallback((mode: "single" | "hold" = "single") => {
+    // Linux fallback: use arecord
+    if (!voiceSupported && linuxVoiceAvailable) {
+      invoke("start_recording")
+        .catch((e) => setError(`Microphone error: ${e}`));
+      setStatus("listening");
+      return;
+    }
+
     // Stop wake word recognition first
     if (wakeRef.current) {
       wakeRef.current.abort();
@@ -174,12 +197,32 @@ export function useVoiceListener(backgroundListening: boolean) {
     }
     modeRef.current = "command";
 
-    // Wait for Chrome to release the mic before starting a new session
+    // Wait for the mic to be released before starting a new session
     restartRef.current = setTimeout(() => startCommand(mode), 150);
-  }, [startCommand]);
+  }, [voiceSupported, linuxVoiceAvailable, setStatus, setError, startCommand]);
 
   // ── Public: stop command session (used for push-to-talk key release) ──
   const stopCommandListening = useCallback(() => {
+    // Linux fallback: stop arecord and transcribe
+    if (!voiceSupported && linuxVoiceAvailable) {
+      const key = openaiKeyRef.current;
+      invoke<string>("stop_recording_and_transcribe", { openaiKey: key || null })
+        .then((text) => {
+          if (text.trim()) {
+            setTranscript(text.trim());
+            // Keep status "listening" so App.tsx effect picks up the transcript
+            setStatus("listening");
+          } else {
+            setStatus("idle");
+          }
+        })
+        .catch((e) => {
+          setError(String(e));
+          setStatus("idle");
+        });
+      return;
+    }
+
     if (restartRef.current) {
       clearTimeout(restartRef.current);
       restartRef.current = null;
@@ -189,7 +232,7 @@ export function useVoiceListener(backgroundListening: boolean) {
       cmdRef.current = null;
     }
     modeRef.current = "off";
-  }, []);
+  }, [voiceSupported, linuxVoiceAvailable, setTranscript, setStatus, setError]);
 
   // ── Public: resume wake word after overlay closes ─────────────────────
   const resumeWakeWord = useCallback(() => {
@@ -232,5 +275,5 @@ export function useVoiceListener(backgroundListening: boolean) {
     return () => stopAll();
   }, [voiceSupported, backgroundListening, startWakeWord, stopAll]);
 
-  return { voiceSupported, startCommandListening, stopCommandListening, resumeWakeWord, stopAll };
+  return { voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, stopAll };
 }

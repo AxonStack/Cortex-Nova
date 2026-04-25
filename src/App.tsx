@@ -4,6 +4,7 @@ import { SetupWizard } from "./components/SetupWizard";
 import { useVoiceListener } from "./hooks/useVoiceListener";
 import { useNovaStore } from "./store/novaStore";
 import type { PlanStep } from "./store/novaStore";
+import { invoke } from "@tauri-apps/api/core";
 import { routeCommand, openUrl } from "./lib/commandRouter";
 import { askAI } from "./lib/providerClient";
 import { speak } from "./lib/speechSynthesis";
@@ -21,8 +22,9 @@ function NovaApp() {
     addActionLog, setPlan, updatePlanStep, clearPlan,
     backgroundListening, setBackgroundListening, setError,
   } = useNovaStore();
-  const { voiceSupported, startCommandListening, stopCommandListening, resumeWakeWord, stopAll } =
-    useVoiceListener(backgroundListening);
+  const openaiKey = providerConfig.provider === "openai" ? providerConfig.apiKey : undefined;
+  const { voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, stopAll } =
+    useVoiceListener(backgroundListening, openaiKey);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -83,6 +85,82 @@ function NovaApp() {
     return () => clearInterval(interval);
   }, [providerConfig.provider, providerConfig.ollamaUrl]);
 
+  // Automate Chrome to search and play on YouTube
+  async function executeYouTubePlay(query: string) {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    const steps: PlanStep[] = [
+      { id: crypto.randomUUID(), label: "Opening Chrome",          detail: "Launching Chrome browser",           status: "pending" },
+      { id: crypto.randomUUID(), label: "Focusing Chrome window",  detail: "Bringing Chrome to the foreground",   status: "pending" },
+      { id: crypto.randomUUID(), label: "Opening address bar",     detail: "Ctrl+L — focusing URL bar",           status: "pending" },
+      { id: crypto.randomUUID(), label: "Typing YouTube search",   detail: searchUrl,                             status: "pending" },
+      { id: crypto.randomUUID(), label: "Loading results",         detail: "Waiting for YouTube search results",  status: "pending" },
+      { id: crypto.randomUUID(), label: "Clicking first result",   detail: `Playing "${query}"`,                  status: "pending" },
+    ];
+
+    setPlan({ title: `Playing: ${query}`, topic: query, type: "youtube_play", steps });
+    addMessage({ role: "ai", text: `Automating Chrome to play "${query}" on YouTube.` });
+    trackActivity("command", `youtube:${query}`);
+
+    const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    const step = (i: number, status: PlanStep["status"]) => updatePlanStep(steps[i].id, status);
+
+    try {
+      // 1. Launch Chrome
+      step(0, "active");
+      await invoke("launch_browser").catch(() => {}); // ignore if already open
+      await delay(1200);
+      step(0, "done");
+
+      // 2. Focus Chrome window
+      step(1, "active");
+      await invoke("focus_window", { name: "Google Chrome" }).catch(() =>
+        invoke("focus_window", { name: "Chromium" }).catch(() => {})
+      );
+      await delay(500);
+      step(1, "done");
+
+      // 3. Click address bar (Ctrl+L)
+      step(2, "active");
+      await invoke("press_key", { keys: "ctrl+l" });
+      await delay(400);
+      step(2, "done");
+
+      // 4. Type the search URL
+      step(3, "active");
+      await invoke("type_text", { text: searchUrl });
+      await delay(300);
+      await invoke("press_key", { keys: "Return" });
+      step(3, "done");
+
+      // 5. Wait for page to load
+      step(4, "active");
+      await delay(2800);
+      step(4, "done");
+
+      // 6. Tab to first video result and press Enter
+      step(5, "active");
+      for (let i = 0; i < 7; i++) {
+        await invoke("press_key", { keys: "Tab" });
+        await delay(80);
+      }
+      await invoke("press_key", { keys: "Return" });
+      step(5, "done");
+    } catch (err) {
+      const i = steps.findIndex((s) => s.status === "active");
+      if (i >= 0) updatePlanStep(steps[i].id, "error", String(err));
+    }
+
+    setStatus("speaking");
+    const summary = `Now playing "${query}" on YouTube.`;
+    setResponse(summary);
+    addMessage({ role: "ai", text: summary });
+    speak(summary, () => {
+      setStatus("idle");
+      resumeWakeWord();
+      setTimeout(() => clearPlan(), 4000);
+    });
+  }
+
   // Execute a research plan step-by-step
   async function executeResearchPlan(
     topic: string,
@@ -95,7 +173,7 @@ function NovaApp() {
       status: "pending",
     }));
 
-    setPlan({ title: `Researching: ${topic}`, topic, steps: planSteps });
+    setPlan({ title: `Researching: ${topic}`, topic, type: "research", steps: planSteps });
     addMessage({ role: "ai", text: `Starting research on "${topic}" — opening ${steps.length} sources.` });
     trackActivity("research", topic);
 
@@ -141,7 +219,11 @@ function NovaApp() {
       try {
         const result = await routeCommand(transcript);
 
-        if (result.type === "research") {
+        if (result.type === "youtube_play") {
+          addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${result.query}` });
+          await executeYouTubePlay(result.query);
+
+        } else if (result.type === "research") {
           trackActivity("research", result.topic);
           addActionLog({ ts: Date.now(), type: "research", label: `Researching: ${result.topic}` });
           await executeResearchPlan(result.topic, result.steps);
@@ -183,11 +265,12 @@ function NovaApp() {
 
   // Spacebar hold-to-talk
   useEffect(() => {
+    const anyVoice = voiceSupported || linuxVoiceAvailable === true;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.target !== document.body) return;
       if (e.code === "Space") {
         e.preventDefault();
-        if (voiceSupported && !e.repeat && !holdSpaceRef.current) {
+        if (anyVoice && !e.repeat && !holdSpaceRef.current) {
           holdSpaceRef.current = true;
           setIsHoldingSpace(true);
           setTranscript("");
@@ -228,7 +311,7 @@ function NovaApp() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [voiceSupported, startCommandListening, stopCommandListening, resumeWakeWord, setTranscript, setResponse, setStatus]);
+  }, [voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, setTranscript, setResponse, setStatus]);
 
   function submitText(text: string) {
     if (!text.trim()) return;
@@ -239,7 +322,7 @@ function NovaApp() {
   return (
     <NovaChatInterface
       isHoldingSpace={isHoldingSpace}
-      voiceSupported={voiceSupported}
+      voiceSupported={voiceSupported || linuxVoiceAvailable === true}
       backgroundListening={backgroundListening}
       ollamaConnected={ollamaConnected}
       onSubmitText={submitText}

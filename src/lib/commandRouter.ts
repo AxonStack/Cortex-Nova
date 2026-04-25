@@ -5,6 +5,7 @@ export type CommandResult =
   | { type: "os_action"; message: string }
   | { type: "ai_query"; query: string }
   | { type: "research"; topic: string; steps: ResearchStep[] }
+  | { type: "live_score"; query: string; url: string }
   | { type: "youtube_play"; query: string };
 
 export interface ResearchStep {
@@ -13,6 +14,16 @@ export interface ResearchStep {
   detail: string;
   url: string;
   delayMs: number;
+}
+
+function normalizeTranscript(transcript: string): string {
+  return transcript
+    .trim()
+    .replace(/^[,.\s]+|[,.\s]+$/g, "")
+    .replace(/^(?:hey|okay|ok|yo|yeah|just)\s+/i, "")
+    .replace(/^(?:please|pls)\s+/i, "")
+    .replace(/^(?:cortex\s+nova|nova|cortex)\s+/i, "")
+    .replace(/\s+/g, " ");
 }
 
 // ── System helpers ────────────────────────────────────────────────────────────
@@ -31,6 +42,10 @@ async function typeText(text: string): Promise<void> {
 
 async function mouseClick(x: number, y: number): Promise<void> {
   await invoke<void>("mouse_click", { x, y });
+}
+
+async function openApplication(app: string): Promise<void> {
+  await invoke<void>("open_application", { app });
 }
 
 // ── Site shorthand map ────────────────────────────────────────────────────────
@@ -52,6 +67,53 @@ const SITE_MAP: Record<string, string> = {
   notion:    "https://www.notion.so",
   chatgpt:   "https://chat.openai.com",
 };
+
+const APP_ALIASES: Record<string, string> = {
+  calculator: "calculator",
+  calc: "calculator",
+  terminal: "terminal",
+  files: "files",
+  "file manager": "files",
+  spotify: "spotify",
+  discord: "discord",
+  slack: "slack",
+  vscode: "code",
+  "vs code": "code",
+  code: "code",
+  chrome: "google chrome",
+  "google chrome": "google chrome",
+  chromium: "chromium",
+};
+
+async function openTarget(target: string): Promise<CommandResult> {
+  const trimmed = target.trim();
+  const lower = trimmed.toLowerCase();
+  const appName = APP_ALIASES[lower] ?? trimmed;
+
+  try {
+    await openApplication(appName);
+    return { type: "os_action", message: `Opening app: ${trimmed}` };
+  } catch {
+    const siteUrl = SITE_MAP[lower];
+    if (siteUrl) {
+      await openUrl(siteUrl);
+      return { type: "os_action", message: `Opening ${trimmed}` };
+    }
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      await openUrl(trimmed);
+      return { type: "os_action", message: `Opening ${trimmed}` };
+    }
+
+    if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/.*)?$/i.test(trimmed)) {
+      const url = `https://${trimmed}`;
+      await openUrl(url);
+      return { type: "os_action", message: `Opening ${trimmed}` };
+    }
+
+    throw new Error(`Could not open "${trimmed}" as an app or website.`);
+  }
+}
 
 // ── Research plan builder ─────────────────────────────────────────────────────
 
@@ -88,6 +150,10 @@ function buildResearchPlan(topic: string): ResearchStep[] {
     },
   ];
   return steps;
+}
+
+function buildLiveScoreUrl(query: string): string {
+  return `https://www.google.com/search?q=${encodeURIComponent(`${query} live score`)}`;
 }
 
 // ── Command patterns ──────────────────────────────────────────────────────────
@@ -173,6 +239,22 @@ const OS_PATTERNS: Array<{
     },
   },
 
+  // ── Sports: live/current score ──────────────────────────────────────────
+  {
+    pattern: /^(?:get me|show me|what(?:'s| is)|tell me)\s+(?:the\s+)?(?:current|live|latest)\s+(.+?)\s+score$/i,
+    handler: async (match) => {
+      const query = match[1].trim();
+      return { type: "live_score", query, url: buildLiveScoreUrl(query) };
+    },
+  },
+  {
+    pattern: /^(?:current|live|latest)\s+(.+?)\s+score$/i,
+    handler: async (match) => {
+      const query = match[1].trim();
+      return { type: "live_score", query, url: buildLiveScoreUrl(query) };
+    },
+  },
+
   // ── Media: play / open on youtube → full browser automation ────────────
   {
     pattern: /^play (.+?) on youtube/i,
@@ -180,6 +262,14 @@ const OS_PATTERNS: Array<{
   },
   {
     pattern: /^open (.+?) (?:in|on) youtube/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:use\s+)?youtube(?:\s+to)?\s+play\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:use\s+)?youtube(?:\s+to)?\s+open\s+(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
@@ -258,29 +348,24 @@ const OS_PATTERNS: Array<{
   // ── Navigation: go to [site name] ───────────────────────────────────────
   {
     pattern: /^go to (.+)/i,
-    handler: async (match) => {
-      const target = match[1].toLowerCase().trim();
-      const url = SITE_MAP[target] ?? `https://${target}`;
-      await openUrl(url);
-      return { type: "os_action", message: `Opening ${match[1]}` };
-    },
+    handler: async (match) => openTarget(match[1]),
   },
 
   // ── Open [site name] ────────────────────────────────────────────────────
   {
     pattern: /^open (.+)/i,
-    handler: async (match) => {
-      const target = match[1].toLowerCase().trim();
-      await openUrl(SITE_MAP[target] ?? `https://${target}.com`);
-      return { type: "os_action", message: `Opening ${match[1]}` };
-    },
+    handler: async (match) => openTarget(match[1]),
+  },
+  {
+    pattern: /^(?:launch|start|run) (.+)/i,
+    handler: async (match) => openTarget(match[1]),
   },
 ];
 
 // ── Router ───────────────────────────────────────────────────────────────────
 
 export async function routeCommand(transcript: string): Promise<CommandResult> {
-  const trimmed = transcript.trim();
+  const trimmed = normalizeTranscript(transcript);
   for (const { pattern, handler } of OS_PATTERNS) {
     const match = trimmed.match(pattern);
     if (match) return handler(match);

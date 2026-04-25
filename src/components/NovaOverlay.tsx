@@ -7,7 +7,7 @@ import {
   getRecentSearches, getBehaviorPatterns,
   type Memory, type TempEntry, type BehaviorPattern,
 } from "../lib/memory";
-import type { ActionLogEntry, PlanStep } from "../store/novaStore";
+import type { ActionLogEntry } from "../store/novaStore";
 
 interface NovaChatInterfaceProps {
   isHoldingSpace: boolean;
@@ -56,77 +56,6 @@ function ActionTypeBadge({ type }: { type: ActionLogEntry["type"] }) {
     <span className={`text-[9px] tracking-widest border px-1.5 py-0.5 rounded shrink-0 ${styles[type]}`}>
       {labels[type]}
     </span>
-  );
-}
-
-function PlanStepRow({ step }: { step: PlanStep }) {
-  const icon =
-    step.status === "done"    ? "✓" :
-    step.status === "error"   ? "✗" :
-    step.status === "active"  ? "●" : "○";
-
-  const color =
-    step.status === "done"   ? "text-green-500" :
-    step.status === "error"  ? "text-red-500" :
-    step.status === "active" ? "text-blue-500 animate-pulse" :
-    "text-black/30 dark:text-white/25";
-
-  return (
-    <div className={`flex items-start gap-2.5 py-2 border-b border-black/8 dark:border-white/8 last:border-0 transition-all duration-300 ${step.status === "active" ? "opacity-100" : step.status === "pending" ? "opacity-50" : "opacity-90"}`}>
-      <span className={`text-[14px] font-bold mt-0.5 shrink-0 ${color}`}>{icon}</span>
-      <div className="min-w-0">
-        <div className="text-[12px] text-black dark:text-[#e8e8e8] font-medium">{step.label}</div>
-        {step.detail && (
-          <div className="text-[10px] text-black/45 dark:text-white/35 mt-0.5 truncate">{step.detail}</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PlanOverlay() {
-  const { activePlan } = useNovaStore();
-  if (!activePlan) return null;
-
-  const doneCount = activePlan.steps.filter((s) => s.status === "done").length;
-  const total = activePlan.steps.length;
-  const pct = Math.round((doneCount / total) * 100);
-
-  return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 dark:bg-black/60 rounded-[20px] backdrop-blur-sm">
-      <div className="w-full max-w-sm mx-6 rounded-[20px] border-2 border-black dark:border-[#3a3a3a] bg-[#e8e8e8] dark:bg-[#1a1a1a] shadow-[0_12px_0_#000] dark:shadow-[0_12px_0_#2a2a2a] overflow-hidden">
-        {/* Header */}
-        <div className="px-5 pt-5 pb-3 border-b border-black/15 dark:border-white/10">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-[9px] tracking-[0.3em] uppercase text-black/40 dark:text-white/30">
-              {activePlan.type === "youtube_play" ? "YouTube Automation" : "Research Plan"}
-            </span>
-            <span className="ml-auto text-[9px] tracking-wide text-black/40 dark:text-white/30 tabular-nums">{doneCount}/{total}</span>
-          </div>
-          <div className="text-[14px] font-bold text-black dark:text-[#e8e8e8] tracking-wide">{activePlan.title}</div>
-          {/* Progress bar */}
-          <div className="mt-3 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-black dark:bg-white transition-all duration-500"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-        </div>
-        {/* Steps */}
-        <div className="px-5 py-3">
-          {activePlan.steps.map((step) => (
-            <PlanStepRow key={step.id} step={step} />
-          ))}
-        </div>
-        {doneCount === total && (
-          <div className="px-5 pb-4 text-[11px] tracking-[0.15em] uppercase text-green-600 dark:text-green-400 font-bold">
-            {activePlan.type === "youtube_play"
-              ? "✓ Playing on YouTube — enjoy!"
-              : "✓ All sources opened — check your browser"}
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -236,9 +165,6 @@ export function NovaChatInterface({
     <div className="h-screen bg-[#d8d8d8] dark:bg-[#0f0f0f] p-4 sm:p-6 font-mono flex flex-col transition-colors duration-200 overflow-hidden">
       <div className="flex-1 w-full rounded-[28px] border-2 border-black dark:border-[#3a3a3a] bg-[#dfdfdf] dark:bg-[#171717] shadow-[0_10px_0_#000] dark:shadow-[0_10px_0_#2a2a2a] p-2 flex flex-col min-h-0">
         <div className="relative flex-1 rounded-[20px] border border-black dark:border-[#3a3a3a] bg-[#e8e8e8] dark:bg-[#1f1f1f] p-3 sm:p-4 flex flex-col gap-3 min-h-0">
-
-          {/* Plan overlay */}
-          <PlanOverlay />
 
           {/* Header */}
           <div className="rounded-[16px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] px-4 py-3 flex items-center justify-between gap-3 shrink-0 flex-wrap gap-y-2">

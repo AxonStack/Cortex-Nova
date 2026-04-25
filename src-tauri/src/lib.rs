@@ -243,6 +243,77 @@ fn open_url(url: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn open_application(app: String) -> Result<(), String> {
+    let requested = app.trim();
+    if requested.is_empty() {
+        return Err("No application name provided.".into());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let normalized = requested.to_lowercase();
+        let candidates: Vec<Vec<String>> = match normalized.as_str() {
+            "chrome" | "google chrome" => vec![
+                vec!["google-chrome".into()],
+                vec!["google-chrome-stable".into()],
+                vec!["chromium-browser".into()],
+                vec!["chromium".into()],
+            ],
+            "calculator" | "calc" => vec![
+                vec!["gnome-calculator".into()],
+                vec!["kcalc".into()],
+                vec!["mate-calc".into()],
+                vec!["galculator".into()],
+            ],
+            "files" | "file manager" => vec![
+                vec!["nautilus".into()],
+                vec!["dolphin".into()],
+                vec!["thunar".into()],
+                vec!["pcmanfm".into()],
+            ],
+            "terminal" => vec![
+                vec!["gnome-terminal".into()],
+                vec!["konsole".into()],
+                vec!["xfce4-terminal".into()],
+                vec!["xterm".into()],
+            ],
+            _ => vec![
+                vec![requested.into()],
+                vec!["gtk-launch".into(), requested.replace(' ', "-")],
+                vec!["gio".into(), "launch".into(), requested.into()],
+            ],
+        };
+
+        for cmd in candidates {
+            if let Some((bin, args)) = cmd.split_first() {
+                if std::process::Command::new(bin).args(args).spawn().is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+        Err(format!("Could not open application: {requested}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", requested])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open application {requested}: {e}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", requested])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open application {requested}: {e}"))
+    }
+}
+
 /// Type text into the currently focused application.
 #[tauri::command]
 fn type_text(text: String) -> Result<(), String> {
@@ -583,6 +654,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             open_url,
+            open_application,
             type_text,
             mouse_click,
             launch_browser,

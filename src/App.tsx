@@ -9,6 +9,7 @@ import { routeCommand, openUrl } from "./lib/commandRouter";
 import { askAI } from "./lib/providerClient";
 import { speak } from "./lib/speechSynthesis";
 import { trackActivity } from "./lib/memory";
+import { closeTaskDialog, showTaskDialog } from "./lib/taskDialogWindow";
 
 function NovaApp() {
   const [isHoldingSpace, setIsHoldingSpace] = useState(false);
@@ -20,7 +21,7 @@ function NovaApp() {
     setStatus, setTranscript, setResponse,
     addMessage, clearMessages, resetSetup, theme,
     addActionLog, setPlan, updatePlanStep, clearPlan,
-    backgroundListening, setBackgroundListening, setError,
+    backgroundListening, setBackgroundListening, setError, activePlan,
   } = useNovaStore();
   const openaiKey = providerConfig.provider === "openai" ? providerConfig.apiKey : undefined;
   const { voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, stopAll } =
@@ -29,6 +30,14 @@ function NovaApp() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    if (activePlan) {
+      void showTaskDialog(activePlan);
+      return;
+    }
+    void closeTaskDialog();
+  }, [activePlan]);
 
   async function toggleBackgroundListening() {
     if (backgroundListening) {
@@ -98,7 +107,7 @@ function NovaApp() {
     ];
 
     setPlan({ title: `Playing: ${query}`, topic: query, type: "youtube_play", steps });
-    addMessage({ role: "ai", text: `Automating Chrome to play "${query}" on YouTube.` });
+    addMessage({ role: "ai", text: `Opening Chrome and using YouTube to play "${query}".` });
     trackActivity("command", `youtube:${query}`);
 
     const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -222,6 +231,18 @@ function NovaApp() {
         if (result.type === "youtube_play") {
           addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${result.query}` });
           await executeYouTubePlay(result.query);
+
+        } else if (result.type === "live_score") {
+          await openUrl(result.url);
+          const message = `Opening live score for ${result.query}.`;
+          addActionLog({ ts: Date.now(), type: "research", label: message });
+          addMessage({ role: "ai", text: message });
+          setResponse(message);
+          setStatus("speaking");
+          speak(message, () => {
+            setStatus("idle");
+            resumeWakeWord();
+          });
 
         } else if (result.type === "research") {
           trackActivity("research", result.topic);

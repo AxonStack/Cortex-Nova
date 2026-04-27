@@ -392,13 +392,19 @@ fn mouse_click(x: i32, y: i32) -> Result<(), String> {
 fn launch_browser() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        let candidates = ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"];
-        for bin in candidates {
-            if std::process::Command::new(bin).spawn().is_ok() {
+        let candidates: Vec<(&str, Vec<&str>)> = vec![
+            ("google-chrome", vec![]),
+            ("google-chrome-stable", vec![]),
+            ("chromium-browser", vec![]),
+            ("chromium", vec![]),
+            ("snap", vec!["run", "chromium"]),
+        ];
+        for (bin, args) in candidates {
+            if std::process::Command::new(bin).args(args).spawn().is_ok() {
                 return Ok(());
             }
         }
-        Err("Chrome/Chromium not found. Install google-chrome or chromium.".into())
+        Err("Chrome/Chromium launch failed. Install google-chrome or chromium, or ensure the browser is available on PATH.".into())
     }
     #[cfg(target_os = "macos")]
     {

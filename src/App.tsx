@@ -112,19 +112,26 @@ function NovaApp() {
 
     const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
     const step = (i: number, status: PlanStep["status"]) => updatePlanStep(steps[i].id, status);
+    const tryFocusChrome = async () => {
+      await invoke("focus_window", { name: "Google Chrome" }).catch(() =>
+        invoke("focus_window", { name: "Chromium" }).catch(() =>
+          invoke("focus_window", { name: "chrome" }).catch(() => {})
+        )
+      );
+    };
 
     try {
       // 1. Launch Chrome
       step(0, "active");
-      await invoke("launch_browser");
+      await invoke("launch_browser").catch(async () => {
+        await tryFocusChrome();
+      });
       await delay(1200);
       step(0, "done");
 
       // 2. Focus Chrome window
       step(1, "active");
-      await invoke("focus_window", { name: "Google Chrome" }).catch(() =>
-        invoke("focus_window", { name: "Chromium" }).catch(() => {})
-      );
+      await tryFocusChrome();
       await delay(500);
       step(1, "done");
 
@@ -157,6 +164,8 @@ function NovaApp() {
     } catch (err) {
       const i = steps.findIndex((s) => s.status === "active");
       if (i >= 0) updatePlanStep(steps[i].id, "error", String(err));
+      setStatus("error");
+      setTimeout(() => clearPlan(), 4000);
       throw new Error(
         err instanceof Error
           ? `YouTube automation failed: ${err.message}`
@@ -345,6 +354,7 @@ function NovaApp() {
           });
         }
       } catch (err) {
+        clearPlan();
         useNovaStore.getState().setError(err instanceof Error ? err.message : "Something went wrong.");
       }
     };

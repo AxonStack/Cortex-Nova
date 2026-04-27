@@ -706,6 +706,26 @@ pub fn run() {
         .manage(OAuthServer(Mutex::new(None)))
         .manage(RecordingState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
+        .setup(|_app| {
+            // Disable WebKit GPU hardware acceleration via the WebKit2GTK API.
+            // Env vars alone can't reach this on Fedora/Wayland — GPU compositing
+            // silently outputs a black canvas even when EGL init succeeds.
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                if let Some(win) = _app.get_webview_window("main") {
+                    let _ = win.with_webview(|webview| {
+                        use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+                        if let Some(settings) = webview.inner().settings() {
+                            settings.set_hardware_acceleration_policy(
+                                HardwareAccelerationPolicy::Never,
+                            );
+                        }
+                    });
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_url,
             open_application,

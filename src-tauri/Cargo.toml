@@ -1,6 +1,6 @@
 [package]
 name = "nova"
-version = "0.1.22"
+version = "0.1.23"
 description = "Nova AI Voice Assistant"
 authors = ["you"]
 edition = "2021"
@@ -19,3 +19,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 enigo = { version = "0.2", features = ["x11rb"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2", features = ["v2_40"] }

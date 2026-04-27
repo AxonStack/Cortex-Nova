@@ -38,8 +38,31 @@ LATEST="$(latest_tag "$RELEASE_JSON")"
 
 info "Latest release: $LATEST"
 
-# Prefer .deb on Debian/Ubuntu, fall back to AppImage
-if command -v dpkg &>/dev/null; then
+# Prefer native package manager: RPM on Fedora/RHEL, DEB on Debian/Ubuntu,
+# fall back to AppImage on everything else.
+if command -v dnf &>/dev/null || (command -v rpm &>/dev/null && ! command -v dpkg &>/dev/null); then
+  # ── Fedora / RHEL / openSUSE ───────────────────────────────────────────────
+  case "$ARCH" in
+    x86_64)   ASSET_PATTERN='x86_64\.rpm$' ;;
+    aarch64)  ASSET_PATTERN='aarch64\.rpm$' ;;
+    *)        err "Unsupported architecture: $ARCH" ;;
+  esac
+  URL="$(asset_url_for "$RELEASE_JSON" "$ASSET_PATTERN")"
+  [[ -z "$URL" ]] && err "Could not find an RPM asset for ${ARCH} in release ${LATEST}."
+  FILE="${URL##*/}"
+  TMPFILE=$(mktemp /tmp/cortex-nova-XXXXXX.rpm)
+  info "Downloading $FILE ..."
+  curl -fSL "$URL" -o "$TMPFILE"
+  info "Installing (requires sudo) ..."
+  if command -v dnf &>/dev/null; then
+    sudo dnf install -y "$TMPFILE"
+  else
+    sudo rpm -U --force "$TMPFILE"
+  fi
+  rm -f "$TMPFILE"
+  info "Installed. Run: cortex-nova"
+elif command -v dpkg &>/dev/null; then
+  # ── Debian / Ubuntu ────────────────────────────────────────────────────────
   case "$ARCH" in
     x86_64)   ASSET_PATTERN='(amd64|x86_64).*\.deb$' ;;
     aarch64)  ASSET_PATTERN='(arm64|aarch64).*\.deb$' ;;

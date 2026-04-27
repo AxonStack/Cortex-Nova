@@ -10,6 +10,18 @@ info "Uninstalling $APP_NAME..."
 
 removed=0
 
+# ── RPM install (Fedora/RHEL) ─────────────────────────────────────────────────
+if command -v rpm &>/dev/null && rpm -q cortex-nova &>/dev/null 2>&1; then
+  info "Removing RPM package cortex-nova (requires sudo)..."
+  if command -v dnf &>/dev/null; then
+    sudo dnf remove -y cortex-nova
+  else
+    sudo rpm -e cortex-nova
+  fi
+  ok "RPM package removed."
+  removed=1
+fi
+
 # ── .deb / dpkg install ───────────────────────────────────────────────────────
 if command -v dpkg &>/dev/null && dpkg -l cortex-nova &>/dev/null 2>&1; then
   info "Removing dpkg package cortex-nova (requires sudo)..."

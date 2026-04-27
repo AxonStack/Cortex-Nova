@@ -170,37 +170,47 @@ const OS_PATTERNS: Array<{
   pattern: RegExp;
   handler: (match: RegExpMatchArray) => Promise<CommandResult>;
 }> = [
-  // ── Chained browser intent: open Chrome → YouTube → play query ──────────
+  // ── Chained browser intent: open Chrome/browser → YouTube → play query ──
+  // Handles all natural orderings: "search youtube for", "search for youtube",
+  // "and play a song named X", "and play a song called X", etc.
   {
-    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+search\s+youtube\s+(?:and\s+)?play\s+(.+)/i,
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+search\s+youtube\s+(?:and\s+)?play\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
-    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+search\s+youtube\s+for\s+(.+)/i,
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+search\s+youtube\s+for\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
-    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+(?:search\s+youtube|open\s+youtube|go\s+to\s+youtube)(?:\s+then|\s+and)\s+play\s+(.+)/i,
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+(?:and\s+)?search\s+for\s+youtube\s+(?:and\s+)?(?:play\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?)?(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
-    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(.+)/i,
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+(?:and\s+)?search\s+(?:for\s+)?youtube\s+(?:for|and\s+play)\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
-    pattern: /^(?:first\s+)?open\s+browser\s+search\s+youtube\s+(?:and\s+)?play\s+(.+?)(?:\s+in it)?$/i,
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+(?:search\s+youtube|open\s+youtube|go\s+to\s+youtube)(?:\s+then|\s+and)\s+play\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
-    pattern: /^(?:first\s+)?open\s+browser\s+search\s+youtube\s+for\s+(.+?)(?:\s+in it)?$/i,
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
-    pattern: /^(?:first\s+)?open\s+browser(?:\s+then|\s+and)\s+(?:search\s+youtube|open\s+youtube|go\s+to\s+youtube)(?:\s+then|\s+and)\s+play\s+(.+?)(?:\s+in it)?$/i,
+    pattern: /^(?:first\s+)?open\s+browser\s+search\s+youtube\s+(?:and\s+)?play\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+?)(?:\s+in it)?$/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
-    pattern: /^(?:first\s+)?open\s+browser(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(.+?)(?:\s+in it)?$/i,
+    pattern: /^(?:first\s+)?open\s+browser\s+search\s+youtube\s+for\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+?)(?:\s+in it)?$/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+browser(?:\s+then|\s+and)\s+(?:search\s+youtube|open\s+youtube|go\s+to\s+youtube)(?:\s+then|\s+and)\s+play\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+?)(?:\s+in it)?$/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+browser(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(?:a\s+(?:song|video|track)\s+(?:named|called)\s+)?(.+?)(?:\s+in it)?$/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
@@ -321,6 +331,12 @@ const OS_PATTERNS: Array<{
       url: `https://open.spotify.com/search/${encodeURIComponent(match[1])}`,
       label: `Opening "${match[1]}" on Spotify`,
     }),
+  },
+
+  // ── Media: "play a song named/called X" — extract just the title ────────
+  {
+    pattern: /^play\s+(?:a\s+)?(?:song|video|track|music)\s+(?:named|called)\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
   // ── Media: play [song] ──────────────────────────────────────────────────

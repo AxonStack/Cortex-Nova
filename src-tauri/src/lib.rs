@@ -311,10 +311,25 @@ fn open_application(app: String) -> Result<(), String> {
                 vec!["firefox".into()],
                 vec!["firefox-esr".into()],
             ],
-            "telegram" | "telegram desktop" | "telegram app" => vec![
-                vec!["telegram-desktop".into()],
-                vec!["telegram".into()],
-            ],
+            "telegram" | "telegram desktop" | "telegram app" => {
+                let home = std::env::var("HOME").unwrap_or_default();
+                let mut t = vec![
+                    vec!["telegram-desktop".into()],
+                    vec!["telegram".into()],
+                    vec!["Telegram".into()],
+                ];
+                // Official downloaded binary lives at ~/Telegram/Telegram or /opt/Telegram/Telegram
+                for path in [
+                    format!("{home}/Telegram/Telegram"),
+                    "/opt/Telegram/Telegram".into(),
+                    format!("{home}/.local/bin/Telegram"),
+                ] {
+                    if std::path::Path::new(&path).exists() {
+                        t.push(vec![path]);
+                    }
+                }
+                t
+            }
             "code" | "vscode" | "visual studio code" => vec![
                 vec!["code".into()],
                 vec!["code-insiders".into()],
@@ -326,6 +341,9 @@ fn open_application(app: String) -> Result<(), String> {
         // This prevents snap/flatpak binaries from returning spawn-Ok while the app is missing.
         match normalized.as_str() {
             "telegram" | "telegram desktop" | "telegram app" => {
+                if snap_package_installed("telegram-desktop") {
+                    candidates.push(vec!["snap".into(), "run".into(), "telegram-desktop".into()]);
+                }
                 if flatpak_app_installed("org.telegram.desktop") {
                     candidates.push(vec!["flatpak".into(), "run".into(), "org.telegram.desktop".into()]);
                 }

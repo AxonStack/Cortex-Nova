@@ -78,11 +78,11 @@ else
   # Shell wrapper — sets env vars that WebKit needs on Wayland/Fedora/NVIDIA
   cat >"$LAUNCHER" <<'WRAPPER'
 #!/usr/bin/env bash
-# These two flags fix blank/black window on Fedora/Wayland:
-#  - DMABUF_RENDERER: prevents EGL_BAD_PARAMETER abort
-#  - COMPOSITING_MODE: prevents silent black content area after EGL init
+# Force GTK/WebKit through XWayland — fixes black window on Fedora/Wayland.
+# All vars are only set when the user hasn't already overridden them.
+export GDK_BACKEND="${GDK_BACKEND:-x11}"
 export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
-export WEBKIT_DISABLE_COMPOSITING_MODE="${WEBKIT_DISABLE_COMPOSITING_MODE:-1}"
+export WEBKIT_FORCE_SANDBOX="${WEBKIT_FORCE_SANDBOX:-0}"
 exec "$(dirname "$(realpath "$0")")/cortex-nova.appimage" "$@"
 WRAPPER
   chmod +x "$LAUNCHER"

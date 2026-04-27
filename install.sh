@@ -64,13 +64,25 @@ else
   URL="$(asset_url_for "$RELEASE_JSON" "$ASSET_PATTERN")"
   [[ -z "$URL" ]] && err "Could not find an AppImage asset for ${ARCH} in release ${LATEST}."
   FILE="${URL##*/}"
-  DEST="$HOME/.local/bin/cortex-nova"
+  # AppImage stored as cortex-nova.appimage; the launcher wrapper at cortex-nova
+  # sets required env vars so the command always works from the terminal.
+  APPIMAGE="$HOME/.local/bin/cortex-nova.appimage"
+  LAUNCHER="$HOME/.local/bin/cortex-nova"
   ICON_DEST="$HOME/.local/share/icons/hicolor/128x128/apps/cortex-nova.png"
   ICON_URL="https://raw.githubusercontent.com/${REPO}/${LATEST}/src-tauri/icons/128x128.png"
   mkdir -p "$HOME/.local/bin"
   info "Downloading $FILE ..."
-  curl -fSL "$URL" -o "$DEST"
-  chmod +x "$DEST"
+  curl -fSL "$URL" -o "$APPIMAGE"
+  chmod +x "$APPIMAGE"
+
+  # Shell wrapper — sets env vars that WebKit needs on Wayland/Fedora/NVIDIA
+  cat >"$LAUNCHER" <<'WRAPPER'
+#!/usr/bin/env bash
+# Disable WebKit DMA-buf renderer: prevents EGL_BAD_PARAMETER crash on Wayland
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+exec "$(dirname "$(realpath "$0")")/cortex-nova.appimage" "$@"
+WRAPPER
+  chmod +x "$LAUNCHER"
 
   # Install app icon used by desktop launchers.
   mkdir -p "$(dirname "$ICON_DEST")"
@@ -81,14 +93,14 @@ else
     rm -f "$ICON_DEST"
   fi
 
-  # Desktop entry
+  # Desktop entry points to the wrapper, not the raw AppImage
   DESKTOP_DIR="$HOME/.local/share/applications"
   mkdir -p "$DESKTOP_DIR"
   cat >"$DESKTOP_DIR/cortex-nova.desktop" <<EOF
 [Desktop Entry]
 Name=Cortex Nova
 Comment=AI Voice Assistant
-Exec=env WEBKIT_DISABLE_DMABUF_RENDERER=1 $DEST
+Exec=$LAUNCHER
 Icon=$ICON_DEST
 Terminal=false
 Type=Application
@@ -99,7 +111,7 @@ EOF
   command -v update-desktop-database &>/dev/null && update-desktop-database "$DESKTOP_DIR" || true
   command -v gtk-update-icon-cache &>/dev/null && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" || true
 
-  info "Installed to $DEST"
+  info "Installed to $LAUNCHER"
   info "Make sure ~/.local/bin is in your PATH, then run: cortex-nova"
 fi
 

@@ -19,12 +19,13 @@ if command -v dpkg &>/dev/null && dpkg -l cortex-nova &>/dev/null 2>&1; then
 fi
 
 # ── AppImage install ──────────────────────────────────────────────────────────
-APPIMAGE="$HOME/.local/bin/cortex-nova"
-if [[ -f "$APPIMAGE" ]]; then
-  rm -f "$APPIMAGE"
-  ok "Removed $APPIMAGE"
-  removed=1
-fi
+for f in "$HOME/.local/bin/cortex-nova" "$HOME/.local/bin/cortex-nova.appimage"; do
+  if [[ -f "$f" ]]; then
+    rm -f "$f"
+    ok "Removed $f"
+    removed=1
+  fi
+done
 
 # ── Desktop entry ─────────────────────────────────────────────────────────────
 DESKTOP="$HOME/.local/share/applications/cortex-nova.desktop"

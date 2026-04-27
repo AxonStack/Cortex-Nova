@@ -88,7 +88,7 @@ else
 [Desktop Entry]
 Name=Cortex Nova
 Comment=AI Voice Assistant
-Exec=$DEST
+Exec=env WEBKIT_DISABLE_DMABUF_RENDERER=1 $DEST
 Icon=$ICON_DEST
 Terminal=false
 Type=Application

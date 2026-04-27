@@ -1,3 +1,4 @@
+use enigo::{Enigo, Key, Keyboard, Mouse, Settings, Button, Coordinate};
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -388,77 +389,20 @@ fn open_application(app: String) -> Result<(), String> {
     }
 }
 
-/// Type text into the currently focused application.
+/// Type text into the currently focused application using enigo (no xdotool needed).
 #[tauri::command]
 fn type_text(text: String) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdotool")
-            .args(["type", "--clearmodifiers", "--delay", "20", "--", &text])
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("xdotool not found — install: sudo apt install xdotool. Error: {e}"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let safe = text.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(r#"tell application "System Events" to keystroke "{safe}""#);
-        std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .output()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let safe = text.replace('{', "{{").replace('}', "}}").replace('"', r#""""#);
-        let ps = format!(r#"$wsh = New-Object -ComObject WScript.Shell; $wsh.SendKeys("{safe}")"#);
-        std::process::Command::new("powershell")
-            .args(["-Command", &ps])
-            .output()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    enigo.text(&text).map_err(|e| e.to_string())
 }
 
-/// Move the mouse and left-click at absolute screen coordinates.
+/// Move the mouse and left-click at absolute screen coordinates using enigo.
 #[tauri::command]
 fn mouse_click(x: i32, y: i32) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdotool")
-            .args(["mousemove", &x.to_string(), &y.to_string()])
-            .output();
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        std::process::Command::new("xdotool")
-            .args(["click", "1"])
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("xdotool error: {e}"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!(r#"tell application "System Events" to click at {{{x}, {y}}}"#);
-        std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .output()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let ps = format!(
-            r#"Add-Type -Name W -Namespace "" -Member @"
-[DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
-[DllImport("user32.dll")] public static extern void mouse_event(int f,int x,int y,int c,int e);
-"@; [W]::SetCursorPos({x},{y}); [W]::mouse_event(2,0,0,0,0); [W]::mouse_event(4,0,0,0,0)"#
-        );
-        std::process::Command::new("powershell")
-            .args(["-Command", &ps])
-            .output()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    enigo.move_mouse(x, y, Coordinate::Abs).map_err(|e| e.to_string())?;
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    enigo.button(Button::Left, enigo::Direction::Click).map_err(|e| e.to_string())
 }
 
 /// Launch the system Chrome/Chromium browser as a new window.
@@ -499,15 +443,25 @@ fn launch_browser() -> Result<(), String> {
 }
 
 /// Bring a window to the foreground by partial title match.
+/// Uses wmctrl → xdotool → platform-native fallback (enigo can't raise windows).
 #[tauri::command]
 fn focus_window(name: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdotool")
+        // wmctrl works on both X11 and XWayland; xdotool is the X11-only fallback.
+        if std::process::Command::new("wmctrl")
+            .args(["-a", &name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        // xdotool fallback
+        let _ = std::process::Command::new("xdotool")
             .args(["search", "--name", &name, "windowactivate", "--sync"])
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("xdotool not found — install: sudo dnf install xdotool. Error: {e}"))
+            .status();
+        Ok(()) // best-effort — don't fail the automation chain if focus fails
     }
     #[cfg(target_os = "macos")]
     {
@@ -529,47 +483,67 @@ fn focus_window(name: String) -> Result<(), String> {
     }
 }
 
-/// Send a key or key combination (e.g. "ctrl+l", "Return", "Tab").
+/// Send a key or key combination using enigo (no xdotool needed, works on X11 + Wayland).
 #[tauri::command]
 fn press_key(keys: String) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdotool")
-            .args(["key", "--clearmodifiers", &keys])
-            .output()
-            .map(|_| ())
-            .map_err(|e| format!("xdotool not found — install: sudo dnf install xdotool. Error: {e}"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Map common keys to osascript key codes
-        let script = match keys.to_lowercase().as_str() {
-            "return" | "enter" => r#"tell application "System Events" to key code 36"#.to_string(),
-            "tab" => r#"tell application "System Events" to key code 48"#.to_string(),
-            "ctrl+l" => r#"tell application "System Events" to keystroke "l" using {command down}"#.to_string(),
-            _ => return Err(format!("Unsupported key on macOS: {keys}")),
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    let lower = keys.to_lowercase();
+
+    // Parse modifier+key combos like "ctrl+l", "alt+f4", or bare keys like "Return".
+    let parts: Vec<&str> = lower.split('+').collect();
+    let key_str: &str = parts.last().copied().unwrap_or("");
+    let mods: Vec<&str> = parts[..parts.len().saturating_sub(1)].to_vec();
+
+    let key = match key_str {
+        "return" | "enter" => Key::Return,
+        "tab"              => Key::Tab,
+        "escape" | "esc"   => Key::Escape,
+        "space"            => Key::Space,
+        "backspace"        => Key::Backspace,
+        "delete" | "del"   => Key::Delete,
+        "up"               => Key::UpArrow,
+        "down"             => Key::DownArrow,
+        "left"             => Key::LeftArrow,
+        "right"            => Key::RightArrow,
+        "home"             => Key::Home,
+        "end"              => Key::End,
+        "pageup"           => Key::PageUp,
+        "pagedown"         => Key::PageDown,
+        "f1"  => Key::F1,  "f2"  => Key::F2,  "f3"  => Key::F3,
+        "f4"  => Key::F4,  "f5"  => Key::F5,  "f6"  => Key::F6,
+        "f7"  => Key::F7,  "f8"  => Key::F8,  "f9"  => Key::F9,
+        "f10" => Key::F10, "f11" => Key::F11, "f12" => Key::F12,
+        s if s.chars().count() == 1 => Key::Unicode(s.chars().next().unwrap()),
+        other => return Err(format!("Unknown key: {other}")),
+    };
+
+    // Press modifier keys down
+    for m in &mods {
+        let modifier = match *m {
+            "ctrl" | "control" => Key::Control,
+            "alt"              => Key::Alt,
+            "shift"            => Key::Shift,
+            "meta" | "super" | "win" => Key::Meta,
+            other => return Err(format!("Unknown modifier: {other}")),
         };
-        std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .output()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        enigo.key(modifier, enigo::Direction::Press).map_err(|e| e.to_string())?;
     }
-    #[cfg(target_os = "windows")]
-    {
-        let wsh_key = match keys.to_lowercase().as_str() {
-            "return" | "enter" => "{ENTER}".to_string(),
-            "tab" => "{TAB}".to_string(),
-            "ctrl+l" => "^l".to_string(),
-            _ => keys.clone(),
+
+    enigo.key(key, enigo::Direction::Click).map_err(|e| e.to_string())?;
+
+    // Release modifiers in reverse order
+    for m in mods.iter().rev() {
+        let modifier = match *m {
+            "ctrl" | "control" => Key::Control,
+            "alt"              => Key::Alt,
+            "shift"            => Key::Shift,
+            "meta" | "super" | "win" => Key::Meta,
+            _ => continue,
         };
-        let ps = format!(r#"(New-Object -ComObject WScript.Shell).SendKeys("{wsh_key}")"#);
-        std::process::Command::new("powershell")
-            .args(["-Command", &ps])
-            .output()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        enigo.key(modifier, enigo::Direction::Release).map_err(|e| e.to_string())?;
     }
+
+    Ok(())
 }
 
 /// Start recording microphone audio to /tmp/nova_voice.wav via arecord (Linux).

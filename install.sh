@@ -78,8 +78,11 @@ else
   # Shell wrapper — sets env vars that WebKit needs on Wayland/Fedora/NVIDIA
   cat >"$LAUNCHER" <<'WRAPPER'
 #!/usr/bin/env bash
-# Disable WebKit DMA-buf renderer: prevents EGL_BAD_PARAMETER crash on Wayland
+# These two flags fix blank/black window on Fedora/Wayland:
+#  - DMABUF_RENDERER: prevents EGL_BAD_PARAMETER abort
+#  - COMPOSITING_MODE: prevents silent black content area after EGL init
 export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+export WEBKIT_DISABLE_COMPOSITING_MODE="${WEBKIT_DISABLE_COMPOSITING_MODE:-1}"
 exec "$(dirname "$(realpath "$0")")/cortex-nova.appimage" "$@"
 WRAPPER
   chmod +x "$LAUNCHER"

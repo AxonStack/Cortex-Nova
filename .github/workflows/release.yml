@@ -55,7 +55,11 @@ jobs:
             patchelf \
             libssl-dev \
             libgtk-3-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libx11-dev \
+            libxtst-dev \
+            libevdev-dev
           if ! sudo apt-get install -y libwebkit2gtk-4.1-dev; then
             sudo apt-get install -y libwebkit2gtk-4.0-dev
           fi

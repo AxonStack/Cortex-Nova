@@ -6,7 +6,8 @@ export type CommandResult =
   | { type: "ai_query"; query: string }
   | { type: "research"; topic: string; steps: ResearchStep[] }
   | { type: "live_score"; query: string; url: string }
-  | { type: "youtube_play"; query: string };
+  | { type: "youtube_play"; query: string }
+  | { type: "command_chain"; steps: CommandResult[] };
 
 export interface ResearchStep {
   id: string;
@@ -24,6 +25,13 @@ function normalizeTranscript(transcript: string): string {
     .replace(/^(?:please|pls)\s+/i, "")
     .replace(/^(?:cortex\s+nova|nova|cortex)\s+/i, "")
     .replace(/\s+/g, " ");
+}
+
+function splitChainedCommands(transcript: string): string[] {
+  return transcript
+    .split(/\s+(?:and then|then|after that|next)\s+/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 // ── System helpers ────────────────────────────────────────────────────────────
@@ -162,6 +170,15 @@ const OS_PATTERNS: Array<{
   pattern: RegExp;
   handler: (match: RegExpMatchArray) => Promise<CommandResult>;
 }> = [
+  // ── Chained browser intent: open Chrome → YouTube → play query ──────────
+  {
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+(?:search\s+youtube|open\s+youtube|go\s+to\s+youtube)(?:\s+then|\s+and)\s+play\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
 
   // ── Research / article finder ────────────────────────────────────────────
   {
@@ -364,11 +381,39 @@ const OS_PATTERNS: Array<{
 
 // ── Router ───────────────────────────────────────────────────────────────────
 
-export async function routeCommand(transcript: string): Promise<CommandResult> {
-  const trimmed = normalizeTranscript(transcript);
+async function routeSingleCommand(trimmed: string): Promise<CommandResult> {
   for (const { pattern, handler } of OS_PATTERNS) {
     const match = trimmed.match(pattern);
     if (match) return handler(match);
   }
+  return { type: "ai_query", query: trimmed };
+}
+
+export async function routeCommand(transcript: string): Promise<CommandResult> {
+  const trimmed = normalizeTranscript(transcript);
+  const parts = splitChainedCommands(trimmed);
+
+  if (parts.length === 1) return routeSingleCommand(trimmed);
+
+  const steps: CommandResult[] = [];
+  for (const part of parts) {
+    const step = await routeSingleCommand(part);
+    steps.push(step);
+  }
+
+  if (steps.every((step) => step.type === "os_action")) {
+    return {
+      type: "os_action",
+      message: steps.map((step) => step.message).join(". "),
+    };
+  }
+
+  const priorSteps = steps.slice(0, -1);
+  const lastStep = steps[steps.length - 1];
+
+  if (priorSteps.every((step) => step.type === "os_action") && lastStep.type !== "ai_query") {
+    return { type: "command_chain", steps };
+  }
+
   return { type: "ai_query", query: trimmed };
 }

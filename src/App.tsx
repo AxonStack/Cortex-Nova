@@ -116,7 +116,7 @@ function NovaApp() {
     try {
       // 1. Launch Chrome
       step(0, "active");
-      await invoke("launch_browser").catch(() => {}); // ignore if already open
+      await invoke("launch_browser");
       await delay(1200);
       step(0, "done");
 
@@ -157,6 +157,11 @@ function NovaApp() {
     } catch (err) {
       const i = steps.findIndex((s) => s.status === "active");
       if (i >= 0) updatePlanStep(steps[i].id, "error", String(err));
+      throw new Error(
+        err instanceof Error
+          ? `YouTube automation failed: ${err.message}`
+          : `YouTube automation failed: ${String(err)}`
+      );
     }
 
     setStatus("speaking");
@@ -228,7 +233,71 @@ function NovaApp() {
       try {
         const result = await routeCommand(transcript);
 
-        if (result.type === "youtube_play") {
+        if (result.type === "command_chain") {
+          const leadMessages = result.steps
+            .slice(0, -1)
+            .filter((step): step is Extract<typeof step, { type: "os_action" }> => step.type === "os_action")
+            .map((step) => step.message);
+          const last = result.steps[result.steps.length - 1];
+
+          if (leadMessages.length) {
+            const preface = leadMessages.join(". ");
+            const latencyMs = Math.round(performance.now() - t0);
+            trackActivity("command", preface);
+            addActionLog({ ts: Date.now(), type: "os", label: preface, latencyMs });
+          }
+
+          if (last.type === "youtube_play") {
+            addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${last.query}` });
+            await executeYouTubePlay(last.query);
+
+          } else if (last.type === "live_score") {
+            await openUrl(last.url);
+            const message = `Opening live score for ${last.query}.`;
+            addActionLog({ ts: Date.now(), type: "research", label: message });
+            addMessage({ role: "ai", text: message });
+            setResponse(message);
+            setStatus("speaking");
+            speak(message, () => {
+              setStatus("idle");
+              resumeWakeWord();
+            });
+
+          } else if (last.type === "research") {
+            trackActivity("research", last.topic);
+            addActionLog({ ts: Date.now(), type: "research", label: `Researching: ${last.topic}` });
+            await executeResearchPlan(last.topic, last.steps);
+
+          } else if (last.type === "os_action") {
+            const message = [...leadMessages, last.message].join(". ");
+            const latencyMs = Math.round(performance.now() - t0);
+            trackActivity("command", message);
+            addActionLog({ ts: Date.now(), type: "os", label: message, latencyMs });
+            addMessage({ role: "ai", text: message, latencyMs });
+            setResponse(message);
+            setStatus("speaking");
+            speak(message, () => {
+              setStatus("idle");
+              resumeWakeWord();
+            });
+
+          } else if (last.type === "ai_query") {
+            trackActivity("ai", last.query);
+            const aiResponse = await askAI(last.query, providerConfig);
+            const latencyMs = Math.round(performance.now() - t0);
+            addActionLog({ ts: Date.now(), type: "ai", label: last.query, latencyMs });
+            addMessage({ role: "ai", text: aiResponse, latencyMs });
+            setResponse(aiResponse);
+            setStatus("speaking");
+            speak(aiResponse, () => {
+              setStatus("idle");
+              resumeWakeWord();
+            });
+          } else {
+            throw new Error("Nested command chains are not supported.");
+          }
+
+        } else if (result.type === "youtube_play") {
           addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${result.query}` });
           await executeYouTubePlay(result.query);
 

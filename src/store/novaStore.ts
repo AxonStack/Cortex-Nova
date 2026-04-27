@@ -148,3 +148,8 @@ export const useNovaStore = create<NovaState>()(
     }
   )
 );
+
+export function getRecentChatContext(limit = 6): Array<Pick<ChatMessage, "role" | "text">> {
+  const messages = useNovaStore.getState().messages;
+  return messages.slice(-limit).map(({ role, text }) => ({ role, text }));
+}

@@ -278,6 +278,12 @@ fn open_application(app: String) -> Result<(), String> {
                 vec!["xfce4-terminal".into()],
                 vec!["xterm".into()],
             ],
+            "telegram" | "telegram desktop" | "telegram app" => vec![
+                vec!["telegram-desktop".into()],
+                vec!["telegram".into()],
+                vec!["org.telegram.desktop".into()],
+                vec!["flatpak".into(), "run".into(), "org.telegram.desktop".into()],
+            ],
             _ => vec![
                 vec![requested.into()],
                 vec!["gtk-launch".into(), requested.replace(' ', "-")],

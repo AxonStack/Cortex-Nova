@@ -28,6 +28,7 @@ function normalizeTranscript(transcript: string): string {
     .replace(/^(?:hey|okay|ok|yo|yeah|just)\s+/i, "")
     .replace(/^(?:please|pls)\s+/i, "")
     .replace(/^(?:cortex\s+nova|nova|cortex)\s+/i, "")
+    .replace(/\byoutbe\b/gi, "youtube")
     .replace(/\s+/g, " ");
 }
 
@@ -83,6 +84,9 @@ const APP_ALIASES: Record<string, string> = {
   files: "files",
   "file manager": "files",
   spotify: "spotify",
+  telegram: "telegram",
+  "telegram app": "telegram",
+  "telegram desktop": "telegram",
   discord: "discord",
   slack: "slack",
   vscode: "code",
@@ -168,11 +172,27 @@ const OS_PATTERNS: Array<{
 }> = [
   // ── Chained browser intent: open Chrome → YouTube → play query ──────────
   {
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+search\s+youtube\s+(?:and\s+)?play\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome\s+search\s+youtube\s+for\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
     pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+(?:search\s+youtube|open\s+youtube|go\s+to\s+youtube)(?:\s+then|\s+and)\s+play\s+(.+)/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {
     pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+browser\s+search\s+youtube\s+(?:and\s+)?play\s+(.+?)(?:\s+in it)?$/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+browser\s+search\s+youtube\s+for\s+(.+?)(?:\s+in it)?$/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
   {

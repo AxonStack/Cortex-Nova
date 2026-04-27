@@ -139,7 +139,11 @@ function NovaApp() {
     });
 
     setPlan({ title, topic: title, type: "desktop_task", steps });
-    addMessage({ role: "ai", text: title });
+    // Only announce the start for multi-step tasks — single-step actions already
+    // announce themselves via the final summary message, so skipping avoids duplicates.
+    if (steps.length > 1) {
+      addMessage({ role: "ai", text: title });
+    }
     trackActivity("command", title);
 
     const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -179,10 +183,17 @@ function NovaApp() {
       }
     } catch (err) {
       const i = steps.findIndex((step) => step.status === "active");
-      if (i >= 0) updatePlanStep(steps[i].id, "error", String(err));
-      setStatus("error");
-      setTimeout(() => clearPlan(), 4000);
-      throw err;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (i >= 0) updatePlanStep(steps[i].id, "error", errMsg);
+      const spoken = `Sorry, I couldn't do that. ${errMsg}`;
+      addMessage({ role: "ai", text: spoken });
+      setResponse(spoken);
+      setStatus("speaking");
+      speak(spoken, () => {
+        setStatus("idle");
+        resumeWakeWord();
+        setTimeout(() => clearPlan(), 3000);
+      });
     }
 
     const finalMessage = summary ?? actions.map((action) => action.label).join(". ");

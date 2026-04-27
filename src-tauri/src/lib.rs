@@ -243,6 +243,35 @@ fn open_url(url: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Returns true if `binary` exists somewhere on PATH.
+fn binary_in_path(binary: &str) -> bool {
+    std::env::var("PATH").ok().is_some_and(|paths| {
+        paths
+            .split(':')
+            .any(|dir| std::path::Path::new(dir).join(binary).is_file())
+    })
+}
+
+/// Returns true only when the snap package is actually installed (not just snap itself).
+fn snap_package_installed(name: &str) -> bool {
+    binary_in_path("snap")
+        && std::process::Command::new("snap")
+            .args(["list", name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+}
+
+/// Returns true only when the flatpak app ID is actually installed.
+fn flatpak_app_installed(app_id: &str) -> bool {
+    binary_in_path("flatpak")
+        && std::process::Command::new("flatpak")
+            .args(["info", app_id])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+}
+
 #[tauri::command]
 fn open_application(app: String) -> Result<(), String> {
     let requested = app.trim();
@@ -253,7 +282,7 @@ fn open_application(app: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let normalized = requested.to_lowercase();
-        let candidates: Vec<Vec<String>> = match normalized.as_str() {
+        let mut candidates: Vec<Vec<String>> = match normalized.as_str() {
             "chrome" | "google chrome" => vec![
                 vec!["google-chrome".into()],
                 vec!["google-chrome-stable".into()],
@@ -278,18 +307,39 @@ fn open_application(app: String) -> Result<(), String> {
                 vec!["xfce4-terminal".into()],
                 vec!["xterm".into()],
             ],
+            "firefox" => vec![
+                vec!["firefox".into()],
+                vec!["firefox-esr".into()],
+            ],
             "telegram" | "telegram desktop" | "telegram app" => vec![
                 vec!["telegram-desktop".into()],
                 vec!["telegram".into()],
-                vec!["org.telegram.desktop".into()],
-                vec!["flatpak".into(), "run".into(), "org.telegram.desktop".into()],
             ],
-            _ => vec![
-                vec![requested.into()],
-                vec!["gtk-launch".into(), requested.replace(' ', "-")],
-                vec!["gio".into(), "launch".into(), requested.into()],
+            "code" | "vscode" | "visual studio code" => vec![
+                vec!["code".into()],
+                vec!["code-insiders".into()],
             ],
+            _ => vec![vec![requested.into()]],
         };
+
+        // Append verified snap/flatpak candidates — only when the package is actually installed.
+        // This prevents snap/flatpak binaries from returning spawn-Ok while the app is missing.
+        match normalized.as_str() {
+            "telegram" | "telegram desktop" | "telegram app" => {
+                if flatpak_app_installed("org.telegram.desktop") {
+                    candidates.push(vec!["flatpak".into(), "run".into(), "org.telegram.desktop".into()]);
+                }
+            }
+            "code" | "vscode" | "visual studio code" => {
+                if snap_package_installed("code") {
+                    candidates.push(vec!["snap".into(), "run".into(), "code".into()]);
+                }
+                if flatpak_app_installed("com.visualstudio.code") {
+                    candidates.push(vec!["flatpak".into(), "run".into(), "com.visualstudio.code".into()]);
+                }
+            }
+            _ => {}
+        }
 
         for cmd in candidates {
             if let Some((bin, args)) = cmd.split_first() {

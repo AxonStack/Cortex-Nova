@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="BluntXdev/cortex-nova"
+REPO="AxonStack/Cortex-Nova"
 APP_NAME="Cortex Nova"
 
 err() { echo "[nova] ERROR: $*" >&2; exit 1; }

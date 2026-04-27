@@ -320,7 +320,7 @@ export function NovaChatInterface({
                     <span className={`w-1.5 h-1.5 rounded-full ${isBusy ? "bg-yellow-500 animate-pulse" : activePlan ? "bg-blue-500 animate-pulse" : backgroundListening ? "bg-green-500 animate-pulse" : "bg-black/30 dark:bg-white/25"}`} />
                     <span className="text-[9px] uppercase tracking-wide text-black/40 dark:text-white/30">
                       {activePlan
-                        ? activePlan.type === "youtube_play" ? "PLAYING" : "RESEARCHING"
+                        ? activePlan.type === "youtube_play" ? "PLAYING" : activePlan.type === "desktop_task" ? "WORKING" : "RESEARCHING"
                         : isBusy ? status.toUpperCase() : backgroundListening ? "BG LEARNING" : "IDLE"}
                     </span>
                   </div>
@@ -536,7 +536,7 @@ export function NovaChatInterface({
                 placeholder={
                   isHoldingSpace ? "Listening… release Space when done"
                   : isBusy ? "Processing…"
-                  : activePlan ? activePlan.type === "youtube_play" ? "Playing media — please wait…" : "Researching — please wait…"
+                  : activePlan ? activePlan.type === "youtube_play" ? "Playing media — please wait…" : activePlan.type === "desktop_task" ? "Desktop task running — please wait…" : "Researching — please wait…"
                   : 'Ask anything or say "get me articles about…"'
                 }
                 disabled={isBusy || !!activePlan}

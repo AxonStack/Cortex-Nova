@@ -108,9 +108,9 @@ export function TaskDialogWindow() {
 
           {activePlan && doneCount === total && (
             <div className="px-5 pb-4 text-[11px] tracking-[0.15em] uppercase text-green-600 dark:text-green-400 font-bold">
-              {activePlan.type === "youtube_play"
-                ? "✓ Desktop task complete"
-                : "✓ Research sources opened"}
+              {activePlan.type === "research"
+                ? "✓ Research sources opened"
+                : "✓ Desktop task complete"}
             </div>
           )}
         </div>

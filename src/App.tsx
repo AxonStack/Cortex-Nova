@@ -6,6 +6,7 @@ import { useNovaStore } from "./store/novaStore";
 import type { PlanStep } from "./store/novaStore";
 import { invoke } from "@tauri-apps/api/core";
 import { routeCommand, openUrl } from "./lib/commandRouter";
+import type { CommandResult } from "./lib/commandRouter";
 import { askAI } from "./lib/providerClient";
 import { speak } from "./lib/speechSynthesis";
 import { trackActivity } from "./lib/memory";
@@ -94,6 +95,107 @@ function NovaApp() {
     return () => clearInterval(interval);
   }, [providerConfig.provider, providerConfig.ollamaUrl]);
 
+  type DesktopAction = Extract<
+    CommandResult,
+    { type: "browser_navigate" | "desktop_open_app" | "desktop_type_text" | "desktop_mouse_click" }
+  >;
+
+  const isDesktopAction = (result: CommandResult): result is DesktopAction =>
+    result.type === "browser_navigate" ||
+    result.type === "desktop_open_app" ||
+    result.type === "desktop_type_text" ||
+    result.type === "desktop_mouse_click";
+
+  const describeDesktopAction = (action: DesktopAction): { label: string; detail?: string } => {
+    switch (action.type) {
+      case "browser_navigate":
+        return { label: action.label, detail: action.url };
+      case "desktop_open_app":
+        return { label: action.label, detail: action.app };
+      case "desktop_type_text":
+        return { label: "Typing text", detail: action.text };
+      case "desktop_mouse_click":
+        return { label: "Mouse click", detail: `(${action.x}, ${action.y})` };
+    }
+  };
+
+  const focusChromeWindow = async () => {
+    await invoke("focus_window", { name: "Google Chrome" }).catch(() =>
+      invoke("focus_window", { name: "Chromium" }).catch(() =>
+        invoke("focus_window", { name: "chrome" }).catch(() => {})
+      )
+    );
+  };
+
+  async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string) {
+    const steps: PlanStep[] = actions.map((action) => {
+      const described = describeDesktopAction(action);
+      return {
+        id: crypto.randomUUID(),
+        label: described.label,
+        detail: described.detail,
+        status: "pending",
+      };
+    });
+
+    setPlan({ title, topic: title, type: "desktop_task", steps });
+    addMessage({ role: "ai", text: title });
+    trackActivity("command", title);
+
+    const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+    try {
+      for (let i = 0; i < actions.length; i++) {
+        const action = actions[i];
+        updatePlanStep(steps[i].id, "active");
+
+        if (action.type === "browser_navigate") {
+          await invoke("launch_browser").catch(async () => {
+            await focusChromeWindow();
+          });
+          await delay(1000);
+          await focusChromeWindow();
+          await delay(300);
+          await invoke("press_key", { keys: "ctrl+l" });
+          await delay(200);
+          await invoke("type_text", { text: action.url });
+          await delay(150);
+          await invoke("press_key", { keys: "Return" });
+          await delay(900);
+          trackActivity("open", action.url);
+        } else if (action.type === "desktop_open_app") {
+          await invoke("open_application", { app: action.app });
+          await delay(600);
+        } else if (action.type === "desktop_type_text") {
+          await invoke("type_text", { text: action.text });
+          await delay(250);
+        } else if (action.type === "desktop_mouse_click") {
+          await invoke("mouse_click", { x: action.x, y: action.y });
+          await delay(250);
+        }
+
+        addActionLog({ ts: Date.now(), type: "os", label: describeDesktopAction(action).label });
+        updatePlanStep(steps[i].id, "done");
+      }
+    } catch (err) {
+      const i = steps.findIndex((step) => step.status === "active");
+      if (i >= 0) updatePlanStep(steps[i].id, "error", String(err));
+      setStatus("error");
+      setTimeout(() => clearPlan(), 4000);
+      throw err;
+    }
+
+    const finalMessage = summary ?? actions.map((action) => action.label).join(". ");
+    setResponse(finalMessage);
+    addMessage({ role: "ai", text: finalMessage });
+    setStatus("speaking");
+    speak(finalMessage, () => {
+      setStatus("idle");
+      resumeWakeWord();
+      setTimeout(() => clearPlan(), 4000);
+    });
+  }
+
   // Automate Chrome to search and play on YouTube
   async function executeYouTubePlay(query: string) {
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
@@ -112,26 +214,19 @@ function NovaApp() {
 
     const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
     const step = (i: number, status: PlanStep["status"]) => updatePlanStep(steps[i].id, status);
-    const tryFocusChrome = async () => {
-      await invoke("focus_window", { name: "Google Chrome" }).catch(() =>
-        invoke("focus_window", { name: "Chromium" }).catch(() =>
-          invoke("focus_window", { name: "chrome" }).catch(() => {})
-        )
-      );
-    };
 
     try {
       // 1. Launch Chrome
       step(0, "active");
       await invoke("launch_browser").catch(async () => {
-        await tryFocusChrome();
+        await focusChromeWindow();
       });
       await delay(1200);
       step(0, "done");
 
       // 2. Focus Chrome window
       step(1, "active");
-      await tryFocusChrome();
+      await focusChromeWindow();
       await delay(500);
       step(1, "done");
 
@@ -243,34 +338,26 @@ function NovaApp() {
         const result = await routeCommand(transcript);
 
         if (result.type === "command_chain") {
-          const leadMessages = result.steps
-            .slice(0, -1)
-            .filter((step): step is Extract<typeof step, { type: "os_action" }> => step.type === "os_action")
-            .map((step) => step.message);
           const last = result.steps[result.steps.length - 1];
+          const desktopSteps = result.steps.filter(isDesktopAction);
 
-          if (leadMessages.length) {
-            const preface = leadMessages.join(". ");
-            const latencyMs = Math.round(performance.now() - t0);
-            trackActivity("command", preface);
-            addActionLog({ ts: Date.now(), type: "os", label: preface, latencyMs });
-          }
+          if (desktopSteps.length === result.steps.length) {
+            await executeDesktopActions(
+              "Desktop task in progress",
+              desktopSteps,
+              desktopSteps.map((step) => step.label).join(". ")
+            );
 
-          if (last.type === "youtube_play") {
+          } else if (last.type === "youtube_play") {
             addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${last.query}` });
             await executeYouTubePlay(last.query);
 
           } else if (last.type === "live_score") {
-            await openUrl(last.url);
-            const message = `Opening live score for ${last.query}.`;
-            addActionLog({ ts: Date.now(), type: "research", label: message });
-            addMessage({ role: "ai", text: message });
-            setResponse(message);
-            setStatus("speaking");
-            speak(message, () => {
-              setStatus("idle");
-              resumeWakeWord();
-            });
+            await executeDesktopActions(
+              `Opening live score for ${last.query}`,
+              [{ type: "browser_navigate", url: last.url, label: `Opening live score for ${last.query}` }],
+              `Opening live score for ${last.query}.`
+            );
 
           } else if (last.type === "research") {
             trackActivity("research", last.topic);
@@ -278,7 +365,7 @@ function NovaApp() {
             await executeResearchPlan(last.topic, last.steps);
 
           } else if (last.type === "os_action") {
-            const message = [...leadMessages, last.message].join(". ");
+            const message = last.message;
             const latencyMs = Math.round(performance.now() - t0);
             trackActivity("command", message);
             addActionLog({ ts: Date.now(), type: "os", label: message, latencyMs });
@@ -310,17 +397,15 @@ function NovaApp() {
           addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${result.query}` });
           await executeYouTubePlay(result.query);
 
+        } else if (isDesktopAction(result)) {
+          await executeDesktopActions(result.label, [result], result.label);
+
         } else if (result.type === "live_score") {
-          await openUrl(result.url);
-          const message = `Opening live score for ${result.query}.`;
-          addActionLog({ ts: Date.now(), type: "research", label: message });
-          addMessage({ role: "ai", text: message });
-          setResponse(message);
-          setStatus("speaking");
-          speak(message, () => {
-            setStatus("idle");
-            resumeWakeWord();
-          });
+          await executeDesktopActions(
+            `Opening live score for ${result.query}`,
+            [{ type: "browser_navigate", url: result.url, label: `Opening live score for ${result.query}` }],
+            `Opening live score for ${result.query}.`
+          );
 
         } else if (result.type === "research") {
           trackActivity("research", result.topic);

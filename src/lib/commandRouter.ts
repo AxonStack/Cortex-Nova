@@ -7,6 +7,10 @@ export type CommandResult =
   | { type: "research"; topic: string; steps: ResearchStep[] }
   | { type: "live_score"; query: string; url: string }
   | { type: "youtube_play"; query: string }
+  | { type: "desktop_open_app"; app: string; label: string }
+  | { type: "browser_navigate"; url: string; label: string }
+  | { type: "desktop_type_text"; text: string; label: string }
+  | { type: "desktop_mouse_click"; x: number; y: number; label: string }
   | { type: "command_chain"; steps: CommandResult[] };
 
 export interface ResearchStep {
@@ -29,9 +33,16 @@ function normalizeTranscript(transcript: string): string {
 
 function splitChainedCommands(transcript: string): string[] {
   return transcript
-    .split(/\s+(?:and then|then|after that|next)\s+/i)
+    .split(/\s+(?:and then|then|after that|next|and (?=open\b|launch\b|start\b|run\b|search\b|go to\b|navigate to\b|play\b|youtube\b))\s+/i)
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function normalizeChainPart(part: string): string {
+  return part
+    .replace(/\s+in it$/i, "")
+    .replace(/^search youtube$/i, "open youtube")
+    .trim();
 }
 
 // ── System helpers ────────────────────────────────────────────────────────────
@@ -42,18 +53,6 @@ export async function openUrl(url: string): Promise<void> {
   } catch {
     window.open(url, "_blank", "noopener,noreferrer");
   }
-}
-
-async function typeText(text: string): Promise<void> {
-  await invoke<void>("type_text", { text });
-}
-
-async function mouseClick(x: number, y: number): Promise<void> {
-  await invoke<void>("mouse_click", { x, y });
-}
-
-async function openApplication(app: string): Promise<void> {
-  await invoke<void>("open_application", { app });
 }
 
 // ── Site shorthand map ────────────────────────────────────────────────────────
@@ -77,6 +76,7 @@ const SITE_MAP: Record<string, string> = {
 };
 
 const APP_ALIASES: Record<string, string> = {
+  browser: "google chrome",
   calculator: "calculator",
   calc: "calculator",
   terminal: "terminal",
@@ -98,29 +98,25 @@ async function openTarget(target: string): Promise<CommandResult> {
   const lower = trimmed.toLowerCase();
   const appName = APP_ALIASES[lower] ?? trimmed;
 
-  try {
-    await openApplication(appName);
-    return { type: "os_action", message: `Opening app: ${trimmed}` };
-  } catch {
-    const siteUrl = SITE_MAP[lower];
-    if (siteUrl) {
-      await openUrl(siteUrl);
-      return { type: "os_action", message: `Opening ${trimmed}` };
-    }
-
-    if (/^https?:\/\//i.test(trimmed)) {
-      await openUrl(trimmed);
-      return { type: "os_action", message: `Opening ${trimmed}` };
-    }
-
-    if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/.*)?$/i.test(trimmed)) {
-      const url = `https://${trimmed}`;
-      await openUrl(url);
-      return { type: "os_action", message: `Opening ${trimmed}` };
-    }
-
-    throw new Error(`Could not open "${trimmed}" as an app or website.`);
+  if (APP_ALIASES[lower]) {
+    return { type: "desktop_open_app", app: appName, label: `Opening app: ${trimmed}` };
   }
+
+  const siteUrl = SITE_MAP[lower];
+  if (siteUrl) {
+    return { type: "browser_navigate", url: siteUrl, label: `Opening ${trimmed}` };
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return { type: "browser_navigate", url: trimmed, label: `Opening ${trimmed}` };
+  }
+
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/.*)?$/i.test(trimmed)) {
+    const url = `https://${trimmed}`;
+    return { type: "browser_navigate", url, label: `Opening ${trimmed}` };
+  }
+
+  return { type: "desktop_open_app", app: appName, label: `Opening app: ${trimmed}` };
 }
 
 // ── Research plan builder ─────────────────────────────────────────────────────
@@ -177,6 +173,14 @@ const OS_PATTERNS: Array<{
   },
   {
     pattern: /^(?:first\s+)?open\s+(?:google\s+)?chrome(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(.+)/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+browser(?:\s+then|\s+and)\s+(?:search\s+youtube|open\s+youtube|go\s+to\s+youtube)(?:\s+then|\s+and)\s+play\s+(.+?)(?:\s+in it)?$/i,
+    handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
+  },
+  {
+    pattern: /^(?:first\s+)?open\s+browser(?:\s+then|\s+and)\s+search\s+youtube\s+for\s+(.+?)(?:\s+in it)?$/i,
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
@@ -241,19 +245,18 @@ const OS_PATTERNS: Array<{
   // ── System: type text ───────────────────────────────────────────────────
   {
     pattern: /^type(?: out| in)? (.+)/i,
-    handler: async (match) => {
-      await typeText(match[1]);
-      return { type: "os_action", message: `Typed: "${match[1]}"` };
-    },
+    handler: async (match) => ({ type: "desktop_type_text", text: match[1], label: `Typed: "${match[1]}"` }),
   },
 
   // ── System: mouse click ─────────────────────────────────────────────────
   {
     pattern: /^click (?:at )?(\d+)[, ]+(\d+)/i,
-    handler: async (match) => {
-      await mouseClick(parseInt(match[1]), parseInt(match[2]));
-      return { type: "os_action", message: `Clicked at (${match[1]}, ${match[2]})` };
-    },
+    handler: async (match) => ({
+      type: "desktop_mouse_click",
+      x: parseInt(match[1]),
+      y: parseInt(match[2]),
+      label: `Clicked at (${match[1]}, ${match[2]})`,
+    }),
   },
 
   // ── Sports: live/current score ──────────────────────────────────────────
@@ -293,10 +296,11 @@ const OS_PATTERNS: Array<{
   // ── Media: play on spotify ──────────────────────────────────────────────
   {
     pattern: /^play (.+?) on spotify/i,
-    handler: async (match) => {
-      await openUrl(`https://open.spotify.com/search/${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `Opening "${match[1]}" on Spotify` };
-    },
+    handler: async (match) => ({
+      type: "browser_navigate",
+      url: `https://open.spotify.com/search/${encodeURIComponent(match[1])}`,
+      label: `Opening "${match[1]}" on Spotify`,
+    }),
   },
 
   // ── Media: play [song] ──────────────────────────────────────────────────
@@ -316,50 +320,48 @@ const OS_PATTERNS: Array<{
     pattern: /^email (.+?) (?:about|re|regarding) (.+?) (?:saying|with body|that) (.+)/i,
     handler: async (match) => {
       const [, , subject, body] = match;
-      await openUrl(
-        `https://mail.google.com/mail/?view=cm&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
-      );
-      return { type: "os_action", message: `Composing email: "${subject}"` };
+      return {
+        type: "browser_navigate",
+        url: `https://mail.google.com/mail/?view=cm&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+        label: `Composing email: "${subject}"`,
+      };
     },
   },
 
   // ── Email: compose without body ─────────────────────────────────────────
   {
     pattern: /^email (.+?) (?:about|re|regarding) (.+)/i,
-    handler: async (match) => {
-      await openUrl(
-        `https://mail.google.com/mail/?view=cm&su=${encodeURIComponent(match[2])}`,
-      );
-      return { type: "os_action", message: `Composing email about "${match[2]}"` };
-    },
+    handler: async (match) => ({
+      type: "browser_navigate",
+      url: `https://mail.google.com/mail/?view=cm&su=${encodeURIComponent(match[2])}`,
+      label: `Composing email about "${match[2]}"`,
+    }),
   },
 
   // ── Navigation: open X and go to Y ──────────────────────────────────────
   {
     pattern: /^open (.+?) and (?:go to|navigate to) (.+)/i,
-    handler: async (match) => {
-      const url = match[2].startsWith("http") ? match[2] : `https://${match[2]}`;
-      await openUrl(url);
-      return { type: "os_action", message: `Opening ${match[2]}` };
-    },
+    handler: async (match) => ({
+      type: "browser_navigate",
+      url: match[2].startsWith("http") ? match[2] : `https://${match[2]}`,
+      label: `Opening ${match[2]}`,
+    }),
   },
 
   // ── Search: general ─────────────────────────────────────────────────────
   {
     pattern: /^search (?:for )?(.+)/i,
-    handler: async (match) => {
-      await openUrl(`https://www.google.com/search?q=${encodeURIComponent(match[1])}`);
-      return { type: "os_action", message: `Searching: "${match[1]}"` };
-    },
+    handler: async (match) => ({
+      type: "browser_navigate",
+      url: `https://www.google.com/search?q=${encodeURIComponent(match[1])}`,
+      label: `Searching: "${match[1]}"`,
+    }),
   },
 
   // ── Navigation: go to URL ───────────────────────────────────────────────
   {
     pattern: /^(?:go to|navigate to|open) (https?:\/\/.+)/i,
-    handler: async (match) => {
-      await openUrl(match[1]);
-      return { type: "os_action", message: `Opening ${match[1]}` };
-    },
+    handler: async (match) => ({ type: "browser_navigate", url: match[1], label: `Opening ${match[1]}` }),
   },
 
   // ── Navigation: go to [site name] ───────────────────────────────────────
@@ -397,21 +399,11 @@ export async function routeCommand(transcript: string): Promise<CommandResult> {
 
   const steps: CommandResult[] = [];
   for (const part of parts) {
-    const step = await routeSingleCommand(part);
+    const step = await routeSingleCommand(normalizeChainPart(part));
     steps.push(step);
   }
 
-  if (steps.every((step) => step.type === "os_action")) {
-    return {
-      type: "os_action",
-      message: steps.map((step) => step.message).join(". "),
-    };
-  }
-
-  const priorSteps = steps.slice(0, -1);
-  const lastStep = steps[steps.length - 1];
-
-  if (priorSteps.every((step) => step.type === "os_action") && lastStep.type !== "ai_query") {
+  if (steps.every((step) => step.type !== "ai_query" && step.type !== "command_chain")) {
     return { type: "command_chain", steps };
   }
 

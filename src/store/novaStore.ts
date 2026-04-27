@@ -31,7 +31,7 @@ export interface PlanStep {
 export interface ActivePlan {
   title: string;
   topic: string;
-  type: "research" | "youtube_play";
+  type: "research" | "youtube_play" | "desktop_task";
   steps: PlanStep[];
 }
 

@@ -103,12 +103,12 @@ EOF
   info "Make sure ~/.local/bin is in your PATH, then run: cortex-nova"
 fi
 
-# Linux system dep reminder
-if ! command -v xdotool &>/dev/null; then
+# Optional: wmctrl improves window focus on X11/XWayland (not required)
+if ! command -v wmctrl &>/dev/null; then
   echo ""
-  info "Optional: install xdotool to enable the 'type' and 'click' commands:"
-  info "  sudo apt install xdotool   # Debian/Ubuntu"
-  info "  sudo dnf install xdotool   # Fedora"
+  info "Optional: install wmctrl for better window-focus support:"
+  info "  sudo apt install wmctrl   # Debian/Ubuntu"
+  info "  sudo dnf install wmctrl   # Fedora"
 fi
 
 echo ""

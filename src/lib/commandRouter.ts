@@ -21,6 +21,36 @@ export interface ResearchStep {
   delayMs: number;
 }
 
+// Word-level corrections for common voice recognition errors and fast-typing typos.
+// Applied before regex routing so patterns never need to handle misspellings.
+const WORD_FIXES: Record<string, string> = {
+  // youtube
+  youutbe: "youtube", youutube: "youtube", youtbe: "youtube",
+  youtubee: "youtube", youtub: "youtube", yotube: "youtube",
+  yputube: "youtube", yoytube: "youtube", utube: "youtube",
+  youube: "youtube", youttube: "youtube",
+  // play
+  pleay: "play", paly: "play", plya: "play", pla: "play",
+  playe: "play", palay: "play",
+  // song
+  sonf: "song", soong: "song", snog: "song", songg: "song",
+  sond: "song", sonfg: "song",
+  // search
+  serach: "search", saerch: "search", seach: "search",
+  sreach: "search", serch: "search",
+  // chrome
+  chorme: "chrome", crhome: "chrome", chrom: "chrome",
+  chrme: "chrome", croome: "chrome",
+  // open
+  opne: "open", oen: "open", opeen: "open",
+  // named
+  namde: "named", nmaed: "named",
+  // and
+  adn: "and", nad: "and",
+  // for
+  fro: "for", ofr: "for",
+};
+
 function normalizeTranscript(transcript: string): string {
   return transcript
     .trim()
@@ -28,7 +58,9 @@ function normalizeTranscript(transcript: string): string {
     .replace(/^(?:hey|okay|ok|yo|yeah|just)\s+/i, "")
     .replace(/^(?:please|pls)\s+/i, "")
     .replace(/^(?:cortex\s+nova|nova|cortex)\s+/i, "")
-    .replace(/\byoutbe\b/gi, "youtube")
+    .split(/\s+/)
+    .map((w) => WORD_FIXES[w.toLowerCase()] ?? w)
+    .join(" ")
     .replace(/\s+/g, " ");
 }
 

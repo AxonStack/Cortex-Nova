@@ -119,34 +119,17 @@ function NovaApp() {
     }
   };
 
-  const focusChromeWindow = async () => {
-    await invoke("focus_window", { name: "Google Chrome" }).catch(() =>
-      invoke("focus_window", { name: "Chromium" }).catch(() =>
-        invoke("focus_window", { name: "chrome" }).catch(() => {})
-      )
-    );
-  };
+  const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
   async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string) {
     const steps: PlanStep[] = actions.map((action) => {
       const described = describeDesktopAction(action);
-      return {
-        id: crypto.randomUUID(),
-        label: described.label,
-        detail: described.detail,
-        status: "pending",
-      };
+      return { id: crypto.randomUUID(), label: described.label, detail: described.detail, status: "pending" };
     });
 
     setPlan({ title, topic: title, type: "desktop_task", steps });
-    // Only announce the start for multi-step tasks — single-step actions already
-    // announce themselves via the final summary message, so skipping avoids duplicates.
-    if (steps.length > 1) {
-      addMessage({ role: "ai", text: title });
-    }
+    if (steps.length > 1) addMessage({ role: "ai", text: title });
     trackActivity("command", title);
-
-    const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
     try {
       for (let i = 0; i < actions.length; i++) {
@@ -154,25 +137,21 @@ function NovaApp() {
         updatePlanStep(steps[i].id, "active");
 
         if (action.type === "browser_navigate") {
-          await invoke("launch_browser").catch(async () => {
-            await focusChromeWindow();
-          });
-          await delay(1000);
-          await focusChromeWindow();
-          await delay(300);
-          await invoke("press_key", { keys: "ctrl+l" });
-          await delay(200);
-          await invoke("type_text", { text: action.url });
-          await delay(150);
-          await invoke("press_key", { keys: "Return" });
-          await delay(900);
+          // Use xdg-open: opens the URL in the user's default browser directly —
+          // no keyboard simulation, no Remote Desktop portal, works on X11 and Wayland.
+          await invoke("open_url", { url: action.url });
+          await delay(400);
           trackActivity("open", action.url);
+
         } else if (action.type === "desktop_open_app") {
           await invoke("open_application", { app: action.app });
-          await delay(600);
+          await delay(800);
+
         } else if (action.type === "desktop_type_text") {
+          // Explicitly requested by user — enigo keyboard simulation is correct here.
           await invoke("type_text", { text: action.text });
           await delay(250);
+
         } else if (action.type === "desktop_mouse_click") {
           await invoke("mouse_click", { x: action.x, y: action.y });
           await delay(250);
@@ -182,112 +161,74 @@ function NovaApp() {
         updatePlanStep(steps[i].id, "done");
       }
     } catch (err) {
-      const i = steps.findIndex((step) => step.status === "active");
+      const idx = steps.findIndex((s) => s.status === "active");
       const errMsg = err instanceof Error ? err.message : String(err);
-      if (i >= 0) updatePlanStep(steps[i].id, "error", errMsg);
-      const spoken = `Sorry, I couldn't do that. ${errMsg}`;
+      if (idx >= 0) updatePlanStep(steps[idx].id, "error", errMsg);
+      const spoken = `Sorry, something went wrong: ${errMsg}`;
       addMessage({ role: "ai", text: spoken });
       setResponse(spoken);
       setStatus("speaking");
-      speak(spoken, () => {
-        setStatus("idle");
-        resumeWakeWord();
-        setTimeout(() => clearPlan(), 3000);
-      });
+      speak(spoken, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 3000); });
+      return;
     }
 
-    const finalMessage = summary ?? actions.map((action) => action.label).join(". ");
+    const finalMessage = summary ?? actions.map((a) => a.label).join(". ");
     setResponse(finalMessage);
     addMessage({ role: "ai", text: finalMessage });
     setStatus("speaking");
-    speak(finalMessage, () => {
-      setStatus("idle");
-      resumeWakeWord();
-      setTimeout(() => clearPlan(), 4000);
-    });
+    speak(finalMessage, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 4000); });
   }
 
-  // Automate Chrome to search and play on YouTube
+  // Open YouTube search in the default browser, then keyboard-navigate to the first result.
   async function executeYouTubePlay(query: string) {
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
     const steps: PlanStep[] = [
-      { id: crypto.randomUUID(), label: "Opening Chrome",          detail: "Launching Chrome browser",           status: "pending" },
-      { id: crypto.randomUUID(), label: "Focusing Chrome window",  detail: "Bringing Chrome to the foreground",   status: "pending" },
-      { id: crypto.randomUUID(), label: "Opening address bar",     detail: "Ctrl+L — focusing URL bar",           status: "pending" },
-      { id: crypto.randomUUID(), label: "Typing YouTube search",   detail: searchUrl,                             status: "pending" },
-      { id: crypto.randomUUID(), label: "Loading results",         detail: "Waiting for YouTube search results",  status: "pending" },
-      { id: crypto.randomUUID(), label: "Clicking first result",   detail: `Playing "${query}"`,                  status: "pending" },
+      { id: crypto.randomUUID(), label: "Opening YouTube search", detail: searchUrl,           status: "pending" },
+      { id: crypto.randomUUID(), label: "Waiting for page load",  detail: "~3 seconds",        status: "pending" },
+      { id: crypto.randomUUID(), label: "Selecting first result", detail: `Playing "${query}"`, status: "pending" },
     ];
 
     setPlan({ title: `Playing: ${query}`, topic: query, type: "youtube_play", steps });
-    addMessage({ role: "ai", text: `Opening Chrome and using YouTube to play "${query}".` });
+    addMessage({ role: "ai", text: `Opening YouTube to play "${query}".` });
     trackActivity("command", `youtube:${query}`);
 
-    const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-    const step = (i: number, status: PlanStep["status"]) => updatePlanStep(steps[i].id, status);
+    const step = (i: number, s: PlanStep["status"]) => updatePlanStep(steps[i].id, s);
 
+    // 1. Open the YouTube search URL in the default browser (xdg-open — no dialog)
+    step(0, "active");
+    await invoke("open_url", { url: searchUrl });
+    await delay(500);
+    step(0, "done");
+
+    // 2. Wait for the page to load
+    step(1, "active");
+    await delay(3000);
+    step(1, "done");
+
+    // 3. Try keyboard navigation to auto-play first result.
+    //    Works when the browser runs in XWayland (which it does when launched by Nova,
+    //    since Nova inherits GDK_BACKEND=x11 and passes it to child processes).
+    //    If it fails (native Wayland browser), we still have the search page open.
+    step(2, "active");
     try {
-      // 1. Launch Chrome
-      step(0, "active");
-      await invoke("launch_browser").catch(async () => {
-        await focusChromeWindow();
-      });
-      await delay(1200);
-      step(0, "done");
-
-      // 2. Focus Chrome window
-      step(1, "active");
-      await focusChromeWindow();
-      await delay(500);
-      step(1, "done");
-
-      // 3. Click address bar (Ctrl+L)
-      step(2, "active");
-      await invoke("press_key", { keys: "ctrl+l" });
+      await invoke("focus_window", { name: "YouTube" });
       await delay(400);
-      step(2, "done");
-
-      // 4. Type the search URL
-      step(3, "active");
-      await invoke("type_text", { text: searchUrl });
-      await delay(300);
-      await invoke("press_key", { keys: "Return" });
-      step(3, "done");
-
-      // 5. Wait for page to load
-      step(4, "active");
-      await delay(2800);
-      step(4, "done");
-
-      // 6. Tab to first video result and press Enter
-      step(5, "active");
-      for (let i = 0; i < 7; i++) {
+      // Tab past the header controls to the first video card
+      for (let i = 0; i < 14; i++) {
         await invoke("press_key", { keys: "Tab" });
-        await delay(80);
+        await delay(60);
       }
       await invoke("press_key", { keys: "Return" });
-      step(5, "done");
-    } catch (err) {
-      const i = steps.findIndex((s) => s.status === "active");
-      if (i >= 0) updatePlanStep(steps[i].id, "error", String(err));
-      setStatus("error");
-      setTimeout(() => clearPlan(), 4000);
-      throw new Error(
-        err instanceof Error
-          ? `YouTube automation failed: ${err.message}`
-          : `YouTube automation failed: ${String(err)}`
-      );
+    } catch {
+      // Best-effort — the search page is already open, user can click.
     }
+    step(2, "done");
 
     setStatus("speaking");
-    const summary = `Now playing "${query}" on YouTube.`;
+    const summary = `Playing "${query}" on YouTube.`;
     setResponse(summary);
     addMessage({ role: "ai", text: summary });
-    speak(summary, () => {
-      setStatus("idle");
-      resumeWakeWord();
-      setTimeout(() => clearPlan(), 4000);
-    });
+    speak(summary, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 4000); });
   }
 
   // Execute a research plan step-by-step

@@ -273,6 +273,42 @@ fn flatpak_app_installed(app_id: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Search installed .desktop files for an app matching `name` and launch via gtk-launch.
+/// Covers apps installed as Flatpak, Snap, or system packages that don't have a plain binary.
+#[cfg(target_os = "linux")]
+fn try_desktop_launch(name: &str) -> bool {
+    let needle = name.to_lowercase().replace([' ', '-', '_', '.'], "");
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dirs = [
+        "/usr/share/applications".to_string(),
+        format!("{home}/.local/share/applications"),
+        "/var/lib/flatpak/exports/share/applications".to_string(),
+        format!("{home}/.local/share/flatpak/exports/share/applications"),
+        "/var/lib/snapd/desktop/applications".to_string(),
+    ];
+    for dir in &dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_lowercase();
+                if !fname.ends_with(".desktop") { continue; }
+                let base = fname.trim_end_matches(".desktop")
+                    .replace(['-', '_', '.'], "");
+                if base.contains(&needle) || needle.contains(&base) {
+                    let desktop_id = fname.trim_end_matches(".desktop").to_string();
+                    if std::process::Command::new("gtk-launch")
+                        .arg(&desktop_id)
+                        .spawn()
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 #[tauri::command]
 fn open_application(app: String) -> Result<(), String> {
     let requested = app.trim();
@@ -283,6 +319,8 @@ fn open_application(app: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let normalized = requested.to_lowercase();
+        let home = std::env::var("HOME").unwrap_or_default();
+
         let mut candidates: Vec<Vec<String>> = match normalized.as_str() {
             "chrome" | "google chrome" => vec![
                 vec!["google-chrome".into()],
@@ -290,56 +328,122 @@ fn open_application(app: String) -> Result<(), String> {
                 vec!["chromium-browser".into()],
                 vec!["chromium".into()],
             ],
+            "firefox" | "firefox browser" => vec![
+                vec!["firefox".into()],
+                vec!["firefox-esr".into()],
+            ],
+            "brave" | "brave-browser" | "brave browser" => vec![
+                vec!["brave-browser".into()],
+                vec!["brave".into()],
+            ],
+            "opera" => vec![vec!["opera".into()]],
+            "edge" | "microsoft-edge" | "microsoft edge" => vec![
+                vec!["microsoft-edge".into()],
+                vec!["microsoft-edge-stable".into()],
+            ],
             "calculator" | "calc" => vec![
                 vec!["gnome-calculator".into()],
                 vec!["kcalc".into()],
                 vec!["mate-calc".into()],
                 vec!["galculator".into()],
+                vec!["qalculate-gtk".into()],
             ],
-            "files" | "file manager" => vec![
+            "files" | "file manager" | "nautilus" => vec![
                 vec!["nautilus".into()],
                 vec!["dolphin".into()],
                 vec!["thunar".into()],
                 vec!["pcmanfm".into()],
+                vec!["nemo".into()],
             ],
+            "dolphin" => vec![vec!["dolphin".into()]],
+            "thunar"  => vec![vec!["thunar".into()]],
             "terminal" => vec![
                 vec!["gnome-terminal".into()],
                 vec!["konsole".into()],
                 vec!["xfce4-terminal".into()],
+                vec!["alacritty".into()],
+                vec!["kitty".into()],
+                vec!["tilix".into()],
                 vec!["xterm".into()],
             ],
-            "firefox" => vec![
-                vec!["firefox".into()],
-                vec!["firefox-esr".into()],
-            ],
             "telegram" | "telegram desktop" | "telegram app" => {
-                let home = std::env::var("HOME").unwrap_or_default();
                 let mut t = vec![
                     vec!["telegram-desktop".into()],
                     vec!["telegram".into()],
                     vec!["Telegram".into()],
                 ];
-                // Official downloaded binary lives at ~/Telegram/Telegram or /opt/Telegram/Telegram
                 for path in [
                     format!("{home}/Telegram/Telegram"),
                     "/opt/Telegram/Telegram".into(),
                     format!("{home}/.local/bin/Telegram"),
                 ] {
-                    if std::path::Path::new(&path).exists() {
-                        t.push(vec![path]);
-                    }
+                    if std::path::Path::new(&path).exists() { t.push(vec![path]); }
                 }
                 t
             }
-            "code" | "vscode" | "visual studio code" => vec![
+            "discord" => vec![
+                vec!["discord".into()],
+                vec!["Discord".into()],
+                vec![format!("{home}/.local/bin/discord")],
+            ],
+            "slack" => vec![vec!["slack".into()]],
+            "zoom"  => vec![vec!["zoom".into()]],
+            "skype" => vec![vec!["skype".into()]],
+            "signal" | "signal-desktop" => vec![
+                vec!["signal-desktop".into()],
+                vec!["signal".into()],
+            ],
+            "teams" | "microsoft teams" => vec![
+                vec!["teams".into()],
+                vec!["teams-for-linux".into()],
+            ],
+            "code" | "vscode" | "visual studio code" | "vs code" => vec![
                 vec!["code".into()],
                 vec!["code-insiders".into()],
+                vec!["codium".into()],
             ],
-            _ => vec![vec![requested.into()]],
+            "vim" => vec![vec!["vim".into()]],
+            "gedit" | "text editor" => vec![
+                vec!["gedit".into()],
+                vec!["kate".into()],
+                vec!["mousepad".into()],
+                vec!["xed".into()],
+            ],
+            "vlc" | "media player" => vec![vec!["vlc".into()]],
+            "mpv" => vec![vec!["mpv".into()]],
+            "spotify" => vec![
+                vec!["spotify".into()],
+                vec![format!("{home}/.local/share/spotify/spotify")],
+            ],
+            "steam" => vec![vec!["steam".into()]],
+            "gimp"  => vec![vec!["gimp".into()]],
+            "inkscape" => vec![vec!["inkscape".into()]],
+            "blender"  => vec![vec!["blender".into()]],
+            "obs" | "obs studio" => vec![vec!["obs".into()]],
+            "audacity"  => vec![vec!["audacity".into()]],
+            "kdenlive"  => vec![vec!["kdenlive".into()]],
+            "libreoffice" | "libre office" => vec![vec!["libreoffice".into()]],
+            "gnome-system-monitor" | "system monitor" | "monitor" => vec![
+                vec!["gnome-system-monitor".into()],
+                vec!["ksysguard".into()],
+            ],
+            "settings" => vec![
+                vec!["gnome-control-center".into()],
+                vec!["systemsettings5".into()],
+            ],
+            _ => {
+                // Generic: try the exact requested string and common binary variations
+                let lower = normalized.replace(' ', "-");
+                let no_space = normalized.replace(' ', "");
+                vec![
+                    vec![requested.into()],
+                    vec![lower.clone()],
+                    vec![no_space],
+                ]
+            }
         };
 
-        // Append verified snap/flatpak candidates — only when the package is actually installed.
-        // This prevents snap/flatpak binaries from returning spawn-Ok while the app is missing.
+        // Snap/Flatpak verified candidates for known packages
         match normalized.as_str() {
             "telegram" | "telegram desktop" | "telegram app" => {
                 if snap_package_installed("telegram-desktop") {
@@ -349,7 +453,7 @@ fn open_application(app: String) -> Result<(), String> {
                     candidates.push(vec!["flatpak".into(), "run".into(), "org.telegram.desktop".into()]);
                 }
             }
-            "code" | "vscode" | "visual studio code" => {
+            "code" | "vscode" | "visual studio code" | "vs code" => {
                 if snap_package_installed("code") {
                     candidates.push(vec!["snap".into(), "run".into(), "code".into()]);
                 }
@@ -357,17 +461,48 @@ fn open_application(app: String) -> Result<(), String> {
                     candidates.push(vec!["flatpak".into(), "run".into(), "com.visualstudio.code".into()]);
                 }
             }
+            "discord" => {
+                if flatpak_app_installed("com.discordapp.Discord") {
+                    candidates.push(vec!["flatpak".into(), "run".into(), "com.discordapp.Discord".into()]);
+                }
+                if snap_package_installed("discord") {
+                    candidates.push(vec!["snap".into(), "run".into(), "discord".into()]);
+                }
+            }
+            "spotify" => {
+                if snap_package_installed("spotify") {
+                    candidates.push(vec!["snap".into(), "run".into(), "spotify".into()]);
+                }
+                if flatpak_app_installed("com.spotify.Client") {
+                    candidates.push(vec!["flatpak".into(), "run".into(), "com.spotify.Client".into()]);
+                }
+            }
+            "steam" => {
+                if flatpak_app_installed("com.valvesoftware.Steam") {
+                    candidates.push(vec!["flatpak".into(), "run".into(), "com.valvesoftware.Steam".into()]);
+                }
+            }
             _ => {}
         }
 
-        for cmd in candidates {
+        // Try every binary candidate first
+        for cmd in &candidates {
             if let Some((bin, args)) = cmd.split_first() {
                 if std::process::Command::new(bin).args(args).spawn().is_ok() {
                     return Ok(());
                 }
             }
         }
-        Err(format!("Could not open application: {requested}"))
+
+        // Final fallback: search installed .desktop files and launch via gtk-launch.
+        // Covers any app not in the known list above (Flatpak, AppImage, custom installs).
+        if try_desktop_launch(requested) {
+            return Ok(());
+        }
+
+        Err(format!(
+            "Could not find or launch \"{requested}\". Make sure it is installed and on your PATH."
+        ))
     }
 
     #[cfg(target_os = "macos")]
@@ -376,7 +511,7 @@ fn open_application(app: String) -> Result<(), String> {
             .args(["-a", requested])
             .spawn()
             .map(|_| ())
-            .map_err(|e| format!("Could not open application {requested}: {e}"))
+            .map_err(|e| format!("Could not open {requested}: {e}"))
     }
 
     #[cfg(target_os = "windows")]
@@ -385,7 +520,7 @@ fn open_application(app: String) -> Result<(), String> {
             .args(["/C", "start", "", requested])
             .spawn()
             .map(|_| ())
-            .map_err(|e| format!("Could not open application {requested}: {e}"))
+            .map_err(|e| format!("Could not open {requested}: {e}"))
     }
 }
 

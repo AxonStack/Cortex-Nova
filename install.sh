@@ -98,14 +98,15 @@ else
   curl -fSL "$URL" -o "$APPIMAGE"
   chmod +x "$APPIMAGE"
 
-  # Shell wrapper — sets env vars that WebKit needs on Wayland/Fedora/NVIDIA
+  # Shell wrapper — sets env vars that WebKit needs on Wayland/Fedora/NVIDIA.
+  # These are forced unconditionally: a .desktop launcher or systemd scope may
+  # already have GDK_BACKEND=wayland set, which caused the black window.
   cat >"$LAUNCHER" <<'WRAPPER'
 #!/usr/bin/env bash
-# Force GTK/WebKit through XWayland — fixes black window on Fedora/Wayland.
-# All vars are only set when the user hasn't already overridden them.
-export GDK_BACKEND="${GDK_BACKEND:-x11}"
-export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
-export WEBKIT_FORCE_SANDBOX="${WEBKIT_FORCE_SANDBOX:-0}"
+export GDK_BACKEND=x11
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export WEBKIT_FORCE_SANDBOX=0
 exec "$(dirname "$(realpath "$0")")/cortex-nova.appimage" "$@"
 WRAPPER
   chmod +x "$LAUNCHER"

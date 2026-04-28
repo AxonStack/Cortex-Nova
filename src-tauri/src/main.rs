@@ -2,29 +2,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    // WebKit on Linux/Wayland aborts when the EGL display can't be created via
-    // DMA-buf (common on Fedora/NVIDIA/some Mesa drivers). Set before Tauri
-    // initialises WebKit so the renderer falls back to a safe software path.
-    // On Fedora/Wayland WebKit2GTK renders a black window when using native
-    // Wayland EGL. Three env vars together fix it:
-    //   GDK_BACKEND=x11          — force GTK/WebKit through XWayland (X11)
-    //   WEBKIT_DISABLE_DMABUF_RENDERER=1 — prevent EGL_BAD_PARAMETER abort
-    //   WEBKIT_FORCE_SANDBOX=0   — prevent SELinux/seccomp blocking the renderer
-    // All are set only when not already overridden by the user's environment.
+    // Force WebKit off the native Wayland renderer before GTK initialises.
+    // Set unconditionally — a .desktop launcher may already export GDK_BACKEND=wayland,
+    // which the previous is_err() guard silently left in place causing a black window.
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: single-threaded here, before Tauri/WebKit initialise.
+        // SAFETY: single-threaded here, before Tauri/WebKit/GTK initialise.
+        // Force all vars unconditionally — a Wayland .desktop launcher may have
+        // already set GDK_BACKEND=wayland, which our previous is_err() guard
+        // left untouched and allowed WebKit's native Wayland renderer to produce
+        // a black window on Fedora/NVIDIA/some Mesa drivers.
         unsafe {
-            if std::env::var("GDK_BACKEND").is_err() {
-                std::env::set_var("GDK_BACKEND", "x11");
-            }
-            if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
-                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-     
-            }
-            if std::env::var("WEBKIT_FORCE_SANDBOX").is_err() {
-                std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
-            }
+            // Force GTK through XWayland (X11 backend); avoids native Wayland
+            // WebKitGTK renderer which silently renders a black canvas on many systems.
+            std::env::set_var("GDK_BACKEND", "x11");
+            // Disable DMA-buf zero-copy buffer sharing (causes EGL_BAD_PARAMETER crashes).
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            // Disable WebKit accelerated compositing entirely (deeper than the API policy).
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+            // Prevent SELinux/seccomp from blocking the WebKit GPU process.
+            std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
         }
     }
 

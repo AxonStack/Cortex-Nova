@@ -16,16 +16,16 @@ function postMessage(message: TaskDialogMessage) {
 
 async function getOrCreateTaskDialogWindow() {
   const existing = await WebviewWindow.getByLabel(TASK_DIALOG_LABEL);
-  if (existing) {
-    return existing;
-  }
+  if (existing) return existing;
 
-  const url = `${window.location.pathname}?dialog=task`;
-  return new WebviewWindow(TASK_DIALOG_LABEL, {
-    url,
-    title: "Cortex Nova Task Dialog",
-    width: 420,
-    height: 560,
+  // Tauri 2 expects a path relative to the bundled dist root (or a full URL).
+  // "index.html?dialog=task" reliably points at the same SPA entry that main.tsx
+  // already routes to TaskDialogWindow when ?dialog=task is present.
+  const win = new WebviewWindow(TASK_DIALOG_LABEL, {
+    url: "index.html?dialog=task",
+    title: "Cortex Nova — Task",
+    width: 440,
+    height: 580,
     minWidth: 360,
     minHeight: 420,
     decorations: true,
@@ -33,14 +33,28 @@ async function getOrCreateTaskDialogWindow() {
     alwaysOnTop: true,
     center: true,
     focus: true,
+    skipTaskbar: false,
   });
+
+  // Surface creation errors to the console so silent failures are visible.
+  win.once("tauri://error", (e) => {
+    // eslint-disable-next-line no-console
+    console.error("[task-dialog] failed to create window:", e);
+  });
+
+  return win;
 }
 
 export async function showTaskDialog(plan: ActivePlan): Promise<void> {
   window.localStorage.setItem(TASK_DIALOG_STORAGE_KEY, JSON.stringify(plan));
-  const dialogWindow = await getOrCreateTaskDialogWindow();
-  await dialogWindow.show();
-  await dialogWindow.setFocus();
+  try {
+    const dialogWindow = await getOrCreateTaskDialogWindow();
+    await dialogWindow.show().catch(() => {});
+    await dialogWindow.setFocus().catch(() => {});
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[task-dialog] showTaskDialog error:", err);
+  }
   postMessage({ type: "plan:update", plan });
 }
 

@@ -127,95 +127,110 @@ export async function checkCLI(cli: "claude" | "codex"): Promise<boolean> {
 const OS_TOOLS: Anthropic.Tool[] = [
   {
     name: "open_app",
-    description: "Open a desktop application by name. Use for any request to open, launch, or start an installed app.",
+    description: "Open/launch a desktop application by name. Use for any request to open, launch, start, or run an installed app.",
     input_schema: {
       type: "object" as const,
       properties: {
-        app: { type: "string", description: "App name, e.g. 'spotify', 'telegram', 'calculator', 'vscode', 'terminal', 'chrome', 'firefox'" },
+        app: { type: "string", description: "App name, e.g. 'spotify', 'telegram', 'firefox', 'chrome', 'vscode'" },
         label: { type: "string", description: "Short spoken confirmation, e.g. 'Opening Spotify'" },
       },
       required: ["app", "label"],
     },
   },
   {
+    name: "close_app",
+    description: "Close/quit/kill a running desktop application by name. Use whenever the user says close, quit, exit, kill, stop, or shut a specific app.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        app: { type: "string", description: "App name to close, e.g. 'firefox', 'chrome', 'spotify'" },
+        label: { type: "string", description: "Short spoken confirmation, e.g. 'Closing Firefox'" },
+      },
+      required: ["app", "label"],
+    },
+  },
+  {
     name: "open_url",
-    description: "Open a URL or website in the browser. Use when the user mentions a website, web app, or a URL.",
+    description: "Open a URL or website in the browser. Use when the user mentions a website, web app, or full URL.",
     input_schema: {
       type: "object" as const,
       properties: {
         url: { type: "string", description: "Full URL including https://" },
-        label: { type: "string", description: "Short spoken confirmation, e.g. 'Opening GitHub'" },
+        label: { type: "string", description: "Short spoken confirmation" },
       },
       required: ["url", "label"],
     },
   },
   {
     name: "search_web",
-    description: "Search the web on Google. Use when the user wants to look something up or search for information.",
+    description: "Search Google for information. Use for any 'search for X' / 'look up X' / 'find X online' request.",
     input_schema: {
       type: "object" as const,
-      properties: {
-        query: { type: "string", description: "Search query" },
-      },
+      properties: { query: { type: "string", description: "Search query" } },
       required: ["query"],
     },
   },
   {
     name: "play_youtube",
-    description: "Search and play a video, song, or music on YouTube.",
+    description: "Play a song, video, or music on YouTube. Use for any music/video playback request.",
     input_schema: {
       type: "object" as const,
-      properties: {
-        query: { type: "string", description: "Song, artist, or video to play" },
-      },
+      properties: { query: { type: "string", description: "Song, artist, or video to play" } },
       required: ["query"],
     },
   },
   {
-    name: "type_text",
-    description: "Type text into the currently focused window or application.",
+    name: "compose_email",
+    description: "Open Gmail compose with a recipient, subject, and body pre-filled. Use whenever the user wants to draft, send, write, or compose an email.",
     input_schema: {
       type: "object" as const,
       properties: {
-        text: { type: "string", description: "Text to type" },
+        to: { type: "string", description: "Recipient email address" },
+        subject: { type: "string", description: "Email subject line" },
+        body: { type: "string", description: "Email body text" },
       },
+      required: ["to"],
+    },
+  },
+  {
+    name: "type_text",
+    description: "Type text into the currently focused window. Use only when explicitly asked to type something into the current window.",
+    input_schema: {
+      type: "object" as const,
+      properties: { text: { type: "string", description: "Text to type" } },
       required: ["text"],
     },
   },
   {
     name: "research_topic",
-    description: "Research a topic by opening multiple browser sources (News, Reddit, Wikipedia). Use when the user wants articles, news, or information about a topic.",
+    description: "Research a topic by opening multiple browser sources (News, Reddit, Wikipedia). Use for 'get me articles about X', 'research X', 'tell me about X'.",
     input_schema: {
       type: "object" as const,
-      properties: {
-        topic: { type: "string", description: "Topic to research" },
-      },
+      properties: { topic: { type: "string", description: "Topic to research" } },
       required: ["topic"],
     },
   },
   {
     name: "respond",
-    description: "Give a spoken text response without performing any OS action. Use for questions, facts, jokes, general conversation, or anything that doesn't require desktop control.",
+    description: "Speak a short reply WITHOUT performing any OS action. ONLY use for: factual questions, general conversation, clarifying questions when info is missing. NEVER use this when the user asks to open/close/launch/play/search/email anything — those MUST use the matching action tool.",
     input_schema: {
       type: "object" as const,
-      properties: {
-        message: { type: "string", description: "Concise 1-3 sentence spoken response" },
-      },
+      properties: { message: { type: "string", description: "Concise 1-2 sentence spoken response" } },
       required: ["message"],
     },
   },
 ];
 
 const TOOL_USE_SYSTEM =
-  "You are Cortex Nova, a Jarvis-style AI desktop assistant with full control over the user's computer. " +
-  "You MUST always call one of the provided tools — never respond with plain text. " +
-  "For any request to open an app, website, or file → call open_app or open_url. " +
-  "For music, videos → call play_youtube. " +
-  "For web searches → call search_web. " +
-  "For articles, news, research → call research_topic. " +
-  "For typing something → call type_text. " +
-  "For questions, facts, or conversation → call respond with a short spoken answer. " +
-  "You have the ability to open ANY app the user asks for. Never refuse OS tasks.";
+  "You are Cortex Nova — a Jarvis-style AI desktop assistant with full keyboard, mouse, and process control over the user's computer.\n\n" +
+  "RULES (strict):\n" +
+  "1. You MUST call a tool. Never respond with plain text outside a tool call.\n" +
+  "2. For multi-step requests (e.g. \"open chrome then open gmail then draft email to X\") emit MULTIPLE tool calls in one response — one per step, in order.\n" +
+  "3. Pick the most specific tool: open_app for installed apps, open_url for websites, compose_email for emails, play_youtube for music/video, close_app for closing/quitting, search_web for searches, research_topic for news/articles.\n" +
+  "4. NEVER use the respond tool to TALK ABOUT doing an action — actually call the action tool. respond is only for pure questions/conversation.\n" +
+  "5. Don't refuse OS tasks. You CAN open, close, type, click, navigate. Just call the tool.\n" +
+  "6. If the user references something from earlier (\"that email\", \"the same song\", \"abovementioned\"), use the chat history to resolve it before calling tools.\n" +
+  "7. Only ask via respond if a required field truly cannot be inferred from message + history (e.g. recipient missing). Do NOT invent emails, names, songs, or app states.";
 
 /**
  * Route a user query through Claude tool use so any natural-language OS request
@@ -231,11 +246,19 @@ export async function routeViaAI(query: string, config: ProviderConfig): Promise
 
   const client = new Anthropic({ apiKey: config.apiKey, dangerouslyAllowBrowser: true });
 
+  // Include recent chat history so references like "that email" / "the song"
+  // can be resolved into concrete tool arguments.
+  const history = getChatHistory(query).slice(-6);
+  const historyMessages = history.map((msg) => ({
+    role: msg.role === "ai" ? ("assistant" as const) : ("user" as const),
+    content: msg.text,
+  }));
+
   const message = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
     system: TOOL_USE_SYSTEM,
-    messages: [{ role: "user", content: query }],
+    messages: [...historyMessages, { role: "user", content: query }],
     tools: OS_TOOLS,
     tool_choice: { type: "any" },
   });
@@ -259,6 +282,8 @@ function mapToolUseToCommand(toolUse: Anthropic.ToolUseBlock): CommandResult {
   switch (toolUse.name) {
     case "open_app":
       return { type: "desktop_open_app", app: inp.app, label: inp.label ?? `Opening ${inp.app}` };
+    case "close_app":
+      return { type: "desktop_close_app", app: inp.app, label: inp.label ?? `Closing ${inp.app}` };
     case "open_url":
       return { type: "browser_navigate", url: inp.url, label: inp.label ?? `Opening ${inp.url}` };
     case "search_web":
@@ -269,6 +294,17 @@ function mapToolUseToCommand(toolUse: Anthropic.ToolUseBlock): CommandResult {
       };
     case "play_youtube":
       return { type: "youtube_play", query: inp.query };
+    case "compose_email": {
+      const params = new URLSearchParams();
+      params.set("view", "cm");
+      params.set("fs", "1");
+      if (inp.to) params.set("to", inp.to);
+      if (inp.subject) params.set("su", inp.subject);
+      if (inp.body) params.set("body", inp.body);
+      const url = `https://mail.google.com/mail/?${params.toString()}`;
+      const recipient = inp.to ? ` to ${inp.to}` : "";
+      return { type: "browser_navigate", url, label: `Composing email${recipient}` };
+    }
     case "type_text":
       return { type: "desktop_type_text", text: inp.text, label: `Typed: "${inp.text}"` };
     case "research_topic":

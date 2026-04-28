@@ -524,6 +524,83 @@ fn open_application(app: String) -> Result<(), String> {
     }
 }
 
+/// Close/quit a running desktop application by name. Tries multiple common
+/// process names and pkill flavors so "close firefox" actually terminates it.
+#[tauri::command]
+fn close_application(app: String) -> Result<(), String> {
+    let requested = app.trim();
+    if requested.is_empty() {
+        return Err("No application name provided.".into());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let normalized = requested.to_lowercase();
+        // Map common app names to the actual process names that show up in `ps`.
+        let proc_names: Vec<String> = match normalized.as_str() {
+            "chrome" | "google chrome" => vec!["chrome".into(), "google-chrome".into(), "google-chrome-stable".into()],
+            "firefox" | "firefox browser" => vec!["firefox".into(), "firefox-bin".into()],
+            "brave" | "brave-browser" | "brave browser" => vec!["brave".into(), "brave-browser".into()],
+            "edge" | "microsoft-edge" | "microsoft edge" => vec!["msedge".into(), "microsoft-edge".into()],
+            "opera" => vec!["opera".into()],
+            "chromium" => vec!["chromium".into(), "chromium-browser".into()],
+            "telegram" | "telegram desktop" => vec!["telegram-desktop".into(), "Telegram".into()],
+            "discord" => vec!["Discord".into(), "discord".into()],
+            "slack" => vec!["slack".into()],
+            "zoom" => vec!["zoom".into()],
+            "spotify" => vec!["spotify".into()],
+            "vlc" => vec!["vlc".into()],
+            "vscode" | "code" | "vs code" | "visual studio code" => vec!["code".into()],
+            "calculator" | "calc" => vec!["gnome-calculator".into(), "kcalc".into()],
+            "files" | "nautilus" | "file manager" => vec!["nautilus".into(), "dolphin".into(), "thunar".into()],
+            "terminal" => vec!["gnome-terminal".into(), "konsole".into(), "xfce4-terminal".into()],
+            "steam"  => vec!["steam".into()],
+            "gimp"   => vec!["gimp".into()],
+            "obs" | "obs studio" => vec!["obs".into()],
+            _ => vec![requested.to_string(), normalized.replace(' ', "-")],
+        };
+
+        let mut anything_killed = false;
+        for name in &proc_names {
+            // pkill -i is case-insensitive; -f matches the full command line so
+            // launchers like "/opt/google/chrome/chrome" still match "chrome".
+            let status = std::process::Command::new("pkill")
+                .args(["-TERM", "-f", "-i", name])
+                .status();
+            if let Ok(s) = status {
+                if s.success() { anything_killed = true; }
+            }
+        }
+
+        if anything_killed { Ok(()) } else { Err(format!("No running process found for \"{requested}\".")) }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(r#"tell application "{requested}" to quit"#);
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .status()
+            .map(|_| ())
+            .map_err(|e| format!("Could not close {requested}: {e}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // taskkill matches by image name; .exe suffix added if missing
+        let target = if requested.to_lowercase().ends_with(".exe") {
+            requested.to_string()
+        } else {
+            format!("{requested}.exe")
+        };
+        std::process::Command::new("taskkill")
+            .args(["/F", "/IM", &target])
+            .status()
+            .map(|_| ())
+            .map_err(|e| format!("Could not close {requested}: {e}"))
+    }
+}
+
 /// Type text into the currently focused application using enigo (no xdotool needed).
 #[tauri::command]
 fn type_text(text: String) -> Result<(), String> {
@@ -864,6 +941,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_url,
             open_application,
+            close_application,
             type_text,
             mouse_click,
             launch_browser,

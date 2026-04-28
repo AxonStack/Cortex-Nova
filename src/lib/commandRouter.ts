@@ -8,6 +8,7 @@ export type CommandResult =
   | { type: "live_score"; query: string; url: string }
   | { type: "youtube_play"; query: string }
   | { type: "desktop_open_app"; app: string; label: string }
+  | { type: "desktop_close_app"; app: string; label: string }
   | { type: "browser_navigate"; url: string; label: string }
   | { type: "desktop_type_text"; text: string; label: string }
   | { type: "desktop_mouse_click"; x: number; y: number; label: string }

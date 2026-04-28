@@ -97,12 +97,13 @@ function NovaApp() {
 
   type DesktopAction = Extract<
     CommandResult,
-    { type: "browser_navigate" | "desktop_open_app" | "desktop_type_text" | "desktop_mouse_click" }
+    { type: "browser_navigate" | "desktop_open_app" | "desktop_close_app" | "desktop_type_text" | "desktop_mouse_click" }
   >;
 
   const isDesktopAction = (result: CommandResult): result is DesktopAction =>
     result.type === "browser_navigate" ||
     result.type === "desktop_open_app" ||
+    result.type === "desktop_close_app" ||
     result.type === "desktop_type_text" ||
     result.type === "desktop_mouse_click";
 
@@ -111,6 +112,8 @@ function NovaApp() {
       case "browser_navigate":
         return { label: action.label, detail: action.url };
       case "desktop_open_app":
+        return { label: action.label, detail: action.app };
+      case "desktop_close_app":
         return { label: action.label, detail: action.app };
       case "desktop_type_text":
         return { label: "Typing text", detail: action.text };
@@ -132,6 +135,12 @@ function NovaApp() {
           { id: id(), label: `Locating ${action.app}`,    detail: "Searching system for the application", status: "pending" },
           { id: id(), label: `Launching ${action.app}`,   detail: "Starting the process",                  status: "pending" },
           { id: id(), label: "Application opened",        detail: action.label,                            status: "pending" },
+        ];
+      case "desktop_close_app":
+        return [
+          { id: id(), label: `Finding ${action.app}`,     detail: "Looking for the running application",   status: "pending" },
+          { id: id(), label: `Closing ${action.app}`,     detail: "Sending quit/terminate request",        status: "pending" },
+          { id: id(), label: "Application closed",        detail: action.label,                            status: "pending" },
         ];
       case "browser_navigate":
         return [
@@ -183,6 +192,19 @@ function NovaApp() {
 
       updatePlanStep(s3, "active");
       await delay(800);
+      updatePlanStep(s3, "done");
+
+    } else if (action.type === "desktop_close_app") {
+      updatePlanStep(s1, "active");
+      await delay(150);
+      updatePlanStep(s1, "done");
+
+      updatePlanStep(s2, "active");
+      await invoke("close_application", { app: action.app });
+      updatePlanStep(s2, "done");
+
+      updatePlanStep(s3, "active");
+      await delay(400);
       updatePlanStep(s3, "done");
 
     } else if (action.type === "desktop_type_text") {

@@ -121,54 +121,125 @@ function NovaApp() {
 
   const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-  async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string) {
-    const steps: PlanStep[] = actions.map((action) => {
-      const described = describeDesktopAction(action);
-      return { id: crypto.randomUUID(), label: described.label, detail: described.detail, status: "pending" };
-    });
+  // Build the visible checkpoint list for a single desktop action — multiple
+  // sub-steps per action so the user sees granular progress (Locating → Launching →
+  // Application opened, etc.) rather than a single instant tick.
+  function planStepsForAction(action: DesktopAction): PlanStep[] {
+    const id = () => crypto.randomUUID();
+    switch (action.type) {
+      case "desktop_open_app":
+        return [
+          { id: id(), label: `Locating ${action.app}`,    detail: "Searching system for the application", status: "pending" },
+          { id: id(), label: `Launching ${action.app}`,   detail: "Starting the process",                  status: "pending" },
+          { id: id(), label: "Application opened",        detail: action.label,                            status: "pending" },
+        ];
+      case "browser_navigate":
+        return [
+          { id: id(), label: "Opening default browser",   detail: "Handing URL to the system",             status: "pending" },
+          { id: id(), label: "Loading page",              detail: action.url,                              status: "pending" },
+          { id: id(), label: "Page ready",                detail: action.label,                            status: "pending" },
+        ];
+      case "desktop_type_text":
+        return [
+          { id: id(), label: "Acquiring keyboard",        detail: "Preparing input simulation",            status: "pending" },
+          { id: id(), label: `Typing "${action.text}"`,   detail: action.text,                             status: "pending" },
+          { id: id(), label: "Text entered",              detail: action.label,                            status: "pending" },
+        ];
+      case "desktop_mouse_click":
+        return [
+          { id: id(), label: "Acquiring mouse",           detail: "Preparing pointer control",             status: "pending" },
+          { id: id(), label: `Clicking at (${action.x}, ${action.y})`, detail: "Sending click event",      status: "pending" },
+          { id: id(), label: "Click delivered",           detail: action.label,                            status: "pending" },
+        ];
+    }
+  }
 
-    setPlan({ title, topic: title, type: "desktop_task", steps });
-    if (steps.length > 1) addMessage({ role: "ai", text: title });
+  async function runActionWithCheckpoints(action: DesktopAction, stepIds: [string, string, string]) {
+    const [s1, s2, s3] = stepIds;
+
+    if (action.type === "browser_navigate") {
+      updatePlanStep(s1, "active");
+      await delay(150);
+      await invoke("open_url", { url: action.url });
+      updatePlanStep(s1, "done");
+
+      updatePlanStep(s2, "active");
+      await delay(900);
+      updatePlanStep(s2, "done");
+
+      updatePlanStep(s3, "active");
+      await delay(250);
+      updatePlanStep(s3, "done");
+      trackActivity("open", action.url);
+
+    } else if (action.type === "desktop_open_app") {
+      updatePlanStep(s1, "active");
+      await delay(200);
+      updatePlanStep(s1, "done");
+
+      updatePlanStep(s2, "active");
+      await invoke("open_application", { app: action.app });
+      updatePlanStep(s2, "done");
+
+      updatePlanStep(s3, "active");
+      await delay(800);
+      updatePlanStep(s3, "done");
+
+    } else if (action.type === "desktop_type_text") {
+      updatePlanStep(s1, "active");
+      await delay(150);
+      updatePlanStep(s1, "done");
+
+      updatePlanStep(s2, "active");
+      await invoke("type_text", { text: action.text });
+      updatePlanStep(s2, "done");
+
+      updatePlanStep(s3, "active");
+      await delay(150);
+      updatePlanStep(s3, "done");
+
+    } else if (action.type === "desktop_mouse_click") {
+      updatePlanStep(s1, "active");
+      await delay(150);
+      updatePlanStep(s1, "done");
+
+      updatePlanStep(s2, "active");
+      await invoke("mouse_click", { x: action.x, y: action.y });
+      updatePlanStep(s2, "done");
+
+      updatePlanStep(s3, "active");
+      await delay(150);
+      updatePlanStep(s3, "done");
+    }
+  }
+
+  async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string) {
+    // Expand every action into its 3 sub-checkpoints
+    const expanded: { action: DesktopAction; steps: PlanStep[] }[] = actions.map((action) => ({
+      action,
+      steps: planStepsForAction(action),
+    }));
+    const allSteps: PlanStep[] = expanded.flatMap((e) => e.steps);
+
+    setPlan({ title, topic: title, type: "desktop_task", steps: allSteps });
+    addMessage({ role: "ai", text: title });
     trackActivity("command", title);
 
     try {
-      for (let i = 0; i < actions.length; i++) {
-        const action = actions[i];
-        updatePlanStep(steps[i].id, "active");
-
-        if (action.type === "browser_navigate") {
-          // Use xdg-open: opens the URL in the user's default browser directly —
-          // no keyboard simulation, no Remote Desktop portal, works on X11 and Wayland.
-          await invoke("open_url", { url: action.url });
-          await delay(400);
-          trackActivity("open", action.url);
-
-        } else if (action.type === "desktop_open_app") {
-          await invoke("open_application", { app: action.app });
-          await delay(800);
-
-        } else if (action.type === "desktop_type_text") {
-          // Explicitly requested by user — enigo keyboard simulation is correct here.
-          await invoke("type_text", { text: action.text });
-          await delay(250);
-
-        } else if (action.type === "desktop_mouse_click") {
-          await invoke("mouse_click", { x: action.x, y: action.y });
-          await delay(250);
-        }
-
+      for (const { action, steps } of expanded) {
+        const ids: [string, string, string] = [steps[0].id, steps[1].id, steps[2].id];
+        await runActionWithCheckpoints(action, ids);
         addActionLog({ ts: Date.now(), type: "os", label: describeDesktopAction(action).label });
-        updatePlanStep(steps[i].id, "done");
       }
     } catch (err) {
-      const idx = steps.findIndex((s) => s.status === "active");
+      const idx = allSteps.findIndex((s) => s.status === "active");
       const errMsg = err instanceof Error ? err.message : String(err);
-      if (idx >= 0) updatePlanStep(steps[idx].id, "error", errMsg);
+      if (idx >= 0) updatePlanStep(allSteps[idx].id, "error", errMsg);
       const spoken = `Sorry, something went wrong: ${errMsg}`;
       addMessage({ role: "ai", text: spoken });
       setResponse(spoken);
       setStatus("speaking");
-      speak(spoken, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 3000); });
+      speak(spoken, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 4000); });
       return;
     }
 
@@ -176,16 +247,21 @@ function NovaApp() {
     setResponse(finalMessage);
     addMessage({ role: "ai", text: finalMessage });
     setStatus("speaking");
-    speak(finalMessage, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 4000); });
+    // Keep dialog visible for 5s after the spoken summary so user sees all the green ticks.
+    speak(finalMessage, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 5000); });
   }
 
-  // Open YouTube search in the default browser, then keyboard-navigate to the first result.
+  // Multi-step YouTube automation — every visible phase is a checkpoint.
   async function executeYouTubePlay(query: string) {
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    const id = () => crypto.randomUUID();
     const steps: PlanStep[] = [
-      { id: crypto.randomUUID(), label: "Opening YouTube search", detail: searchUrl,           status: "pending" },
-      { id: crypto.randomUUID(), label: "Waiting for page load",  detail: "~3 seconds",        status: "pending" },
-      { id: crypto.randomUUID(), label: "Selecting first result", detail: `Playing "${query}"`, status: "pending" },
+      { id: id(), label: "Opening browser",          detail: "Launching default web browser",     status: "pending" },
+      { id: id(), label: "Loading YouTube",          detail: "https://www.youtube.com",           status: "pending" },
+      { id: id(), label: `Searching "${query}"`,     detail: "Submitting search query",           status: "pending" },
+      { id: id(), label: "Loading results",          detail: "Waiting for search results page",   status: "pending" },
+      { id: id(), label: "Selecting first video",    detail: "Tabbing to first result",           status: "pending" },
+      { id: id(), label: `Playing "${query}"`,       detail: "Pressing Enter to start playback",  status: "pending" },
     ];
 
     setPlan({ title: `Playing: ${query}`, topic: query, type: "youtube_play", steps });
@@ -194,41 +270,57 @@ function NovaApp() {
 
     const step = (i: number, s: PlanStep["status"]) => updatePlanStep(steps[i].id, s);
 
-    // 1. Open the YouTube search URL in the default browser (xdg-open — no dialog)
+    // 1. Open browser via xdg-open (no portal dialog, works on X11 + Wayland)
     step(0, "active");
     await invoke("open_url", { url: searchUrl });
-    await delay(500);
+    await delay(800);
     step(0, "done");
 
-    // 2. Wait for the page to load
+    // 2. Brief pause for browser window to appear
     step(1, "active");
-    await delay(3000);
+    await delay(900);
     step(1, "done");
 
-    // 3. Try keyboard navigation to auto-play first result.
-    //    Works when the browser runs in XWayland (which it does when launched by Nova,
-    //    since Nova inherits GDK_BACKEND=x11 and passes it to child processes).
-    //    If it fails (native Wayland browser), we still have the search page open.
+    // 3. The search URL already includes the query → mark submitted
     step(2, "active");
+    await delay(700);
+    step(2, "done");
+
+    // 4. Wait for the YouTube results page to render
+    step(3, "active");
+    await delay(2200);
+    step(3, "done");
+
+    // 5. Best-effort keyboard navigation to first result.
+    step(4, "active");
+    let keyNavOk = true;
     try {
       await invoke("focus_window", { name: "YouTube" });
       await delay(400);
-      // Tab past the header controls to the first video card
       for (let i = 0; i < 14; i++) {
         await invoke("press_key", { keys: "Tab" });
         await delay(60);
       }
-      await invoke("press_key", { keys: "Return" });
     } catch {
-      // Best-effort — the search page is already open, user can click.
+      keyNavOk = false;
     }
-    step(2, "done");
+    step(4, "done");
+
+    // 6. Press Enter to play the first result
+    step(5, "active");
+    if (keyNavOk) {
+      try { await invoke("press_key", { keys: "Return" }); } catch { /* best-effort */ }
+    }
+    await delay(300);
+    step(5, "done");
 
     setStatus("speaking");
-    const summary = `Playing "${query}" on YouTube.`;
+    const summary = keyNavOk
+      ? `Playing "${query}" on YouTube.`
+      : `Opened YouTube search for "${query}". Click the first result to play.`;
     setResponse(summary);
     addMessage({ role: "ai", text: summary });
-    speak(summary, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 4000); });
+    speak(summary, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 5000); });
   }
 
   // Execute a research plan step-by-step
@@ -391,7 +483,32 @@ function NovaApp() {
           const latencyMs = Math.round(performance.now() - t0);
           addActionLog({ ts: Date.now(), type: "ai", label: result.query, latencyMs });
 
-          if (aiResult.type === "youtube_play") {
+          if (aiResult.type === "command_chain") {
+            // Claude used multiple tools — run each in sequence, each with its own
+            // checkpoint dialog. Each phase shows its own progress before the next starts.
+            const desktopSubset = aiResult.steps.filter(isDesktopAction);
+            if (desktopSubset.length === aiResult.steps.length) {
+              // All are simple desktop actions → run as a single multi-step plan
+              await executeDesktopActions(
+                "Running task",
+                desktopSubset,
+                desktopSubset.map((s) => s.label).join(". ")
+              );
+            } else {
+              // Mixed (e.g. open app + youtube_play) → run sequentially
+              for (const sub of aiResult.steps) {
+                if (sub.type === "youtube_play") {
+                  await executeYouTubePlay(sub.query);
+                } else if (isDesktopAction(sub)) {
+                  await executeDesktopActions(sub.label, [sub], sub.label);
+                } else if (sub.type === "research") {
+                  await executeResearchPlan(sub.topic, sub.steps);
+                } else if (sub.type === "os_action") {
+                  addMessage({ role: "ai", text: sub.message });
+                }
+              }
+            }
+          } else if (aiResult.type === "youtube_play") {
             await executeYouTubePlay(aiResult.query);
           } else if (isDesktopAction(aiResult)) {
             await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);

@@ -233,47 +233,48 @@ export async function routeViaAI(query: string, config: ProviderConfig): Promise
 
   const message = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 512,
+    max_tokens: 1024,
     system: TOOL_USE_SYSTEM,
     messages: [{ role: "user", content: query }],
     tools: OS_TOOLS,
     tool_choice: { type: "any" },
   });
 
-  const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-  if (!toolUse) {
+  const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+  if (toolUses.length === 0) {
     return { type: "os_action", message: "I'm not sure how to help with that." };
   }
 
-  const inp = toolUse.input as Record<string, string>;
-  trackActivity("ai", `tool:${toolUse.name}:${query}`);
+  trackActivity("ai", `tool:${toolUses.map((t) => t.name).join(",")}:${query}`);
 
+  const mapped = toolUses.map((t) => mapToolUseToCommand(t));
+  if (mapped.length === 1) return mapped[0];
+
+  // Multiple tool calls → return a chain so each step shows its own checkpoints.
+  return { type: "command_chain", steps: mapped };
+}
+
+function mapToolUseToCommand(toolUse: Anthropic.ToolUseBlock): CommandResult {
+  const inp = toolUse.input as Record<string, string>;
   switch (toolUse.name) {
     case "open_app":
       return { type: "desktop_open_app", app: inp.app, label: inp.label ?? `Opening ${inp.app}` };
-
     case "open_url":
       return { type: "browser_navigate", url: inp.url, label: inp.label ?? `Opening ${inp.url}` };
-
     case "search_web":
       return {
         type: "browser_navigate",
         url: `https://www.google.com/search?q=${encodeURIComponent(inp.query)}`,
         label: `Searching: "${inp.query}"`,
       };
-
     case "play_youtube":
       return { type: "youtube_play", query: inp.query };
-
     case "type_text":
       return { type: "desktop_type_text", text: inp.text, label: `Typed: "${inp.text}"` };
-
     case "research_topic":
       return { type: "research", topic: inp.topic, steps: buildResearchPlan(inp.topic) };
-
     case "respond":
       return { type: "os_action", message: inp.message };
-
     default:
       return { type: "os_action", message: "I'm not sure how to help with that." };
   }

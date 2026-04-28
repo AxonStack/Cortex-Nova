@@ -157,7 +157,7 @@ async function openTarget(target: string): Promise<CommandResult> {
 
 // ── Research plan builder ─────────────────────────────────────────────────────
 
-function buildResearchPlan(topic: string): ResearchStep[] {
+export function buildResearchPlan(topic: string): ResearchStep[] {
   const q = encodeURIComponent(topic);
   const steps: ResearchStep[] = [
     {

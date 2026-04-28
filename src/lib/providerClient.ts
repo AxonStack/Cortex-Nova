@@ -3,7 +3,9 @@ import OpenAI from "openai";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProviderConfig } from "../store/novaStore";
 import { getRecentChatContext } from "../store/novaStore";
-import { recall } from "./memory";
+import { recall, trackActivity } from "./memory";
+import type { CommandResult } from "./commandRouter";
+import { buildResearchPlan } from "./commandRouter";
 
 const SYSTEM_PROMPT =
   "You are Cortex Nova, a helpful voice assistant. Keep responses concise and conversational — they will be spoken aloud. Aim for 1–3 sentences. Never claim you opened apps, triggered permissions, or completed OS actions unless the app has already confirmed that happened. If an action sounds like device control but you do not have confirmation, say you cannot verify it instead of inventing a permission prompt.";
@@ -117,6 +119,163 @@ export async function checkCLI(cli: "claude" | "codex"): Promise<boolean> {
     return await invoke<boolean>("check_cli_available", { cli });
   } catch {
     return false;
+  }
+}
+
+// ── OS Tool definitions for Claude tool use ───────────────────────────────────
+
+const OS_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "open_app",
+    description: "Open a desktop application by name. Use for any request to open, launch, or start an installed app.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        app: { type: "string", description: "App name, e.g. 'spotify', 'telegram', 'calculator', 'vscode', 'terminal', 'chrome', 'firefox'" },
+        label: { type: "string", description: "Short spoken confirmation, e.g. 'Opening Spotify'" },
+      },
+      required: ["app", "label"],
+    },
+  },
+  {
+    name: "open_url",
+    description: "Open a URL or website in the browser. Use when the user mentions a website, web app, or a URL.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "Full URL including https://" },
+        label: { type: "string", description: "Short spoken confirmation, e.g. 'Opening GitHub'" },
+      },
+      required: ["url", "label"],
+    },
+  },
+  {
+    name: "search_web",
+    description: "Search the web on Google. Use when the user wants to look something up or search for information.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Search query" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "play_youtube",
+    description: "Search and play a video, song, or music on YouTube.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Song, artist, or video to play" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "type_text",
+    description: "Type text into the currently focused window or application.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        text: { type: "string", description: "Text to type" },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "research_topic",
+    description: "Research a topic by opening multiple browser sources (News, Reddit, Wikipedia). Use when the user wants articles, news, or information about a topic.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        topic: { type: "string", description: "Topic to research" },
+      },
+      required: ["topic"],
+    },
+  },
+  {
+    name: "respond",
+    description: "Give a spoken text response without performing any OS action. Use for questions, facts, jokes, general conversation, or anything that doesn't require desktop control.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        message: { type: "string", description: "Concise 1-3 sentence spoken response" },
+      },
+      required: ["message"],
+    },
+  },
+];
+
+const TOOL_USE_SYSTEM =
+  "You are Cortex Nova, a Jarvis-style AI desktop assistant with full control over the user's computer. " +
+  "You MUST always call one of the provided tools — never respond with plain text. " +
+  "For any request to open an app, website, or file → call open_app or open_url. " +
+  "For music, videos → call play_youtube. " +
+  "For web searches → call search_web. " +
+  "For articles, news, research → call research_topic. " +
+  "For typing something → call type_text. " +
+  "For questions, facts, or conversation → call respond with a short spoken answer. " +
+  "You have the ability to open ANY app the user asks for. Never refuse OS tasks.";
+
+/**
+ * Route a user query through Claude tool use so any natural-language OS request
+ * (e.g. "can you open Spotify?", "launch telegram for me") is understood and
+ * executed rather than refused as a plain chat reply.
+ */
+export async function routeViaAI(query: string, config: ProviderConfig): Promise<CommandResult> {
+  // For non-Anthropic providers, extract intent from plain text and best-effort parse it.
+  if (config.provider !== "anthropic" || !config.apiKey) {
+    const text = await askAI(query, config);
+    return { type: "os_action", message: text };
+  }
+
+  const client = new Anthropic({ apiKey: config.apiKey, dangerouslyAllowBrowser: true });
+
+  const message = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 512,
+    system: TOOL_USE_SYSTEM,
+    messages: [{ role: "user", content: query }],
+    tools: OS_TOOLS,
+    tool_choice: { type: "any" },
+  });
+
+  const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+  if (!toolUse) {
+    return { type: "os_action", message: "I'm not sure how to help with that." };
+  }
+
+  const inp = toolUse.input as Record<string, string>;
+  trackActivity("ai", `tool:${toolUse.name}:${query}`);
+
+  switch (toolUse.name) {
+    case "open_app":
+      return { type: "desktop_open_app", app: inp.app, label: inp.label ?? `Opening ${inp.app}` };
+
+    case "open_url":
+      return { type: "browser_navigate", url: inp.url, label: inp.label ?? `Opening ${inp.url}` };
+
+    case "search_web":
+      return {
+        type: "browser_navigate",
+        url: `https://www.google.com/search?q=${encodeURIComponent(inp.query)}`,
+        label: `Searching: "${inp.query}"`,
+      };
+
+    case "play_youtube":
+      return { type: "youtube_play", query: inp.query };
+
+    case "type_text":
+      return { type: "desktop_type_text", text: inp.text, label: `Typed: "${inp.text}"` };
+
+    case "research_topic":
+      return { type: "research", topic: inp.topic, steps: buildResearchPlan(inp.topic) };
+
+    case "respond":
+      return { type: "os_action", message: inp.message };
+
+    default:
+      return { type: "os_action", message: "I'm not sure how to help with that." };
   }
 }
 

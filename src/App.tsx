@@ -7,7 +7,7 @@ import type { PlanStep } from "./store/novaStore";
 import { invoke } from "@tauri-apps/api/core";
 import { routeCommand, openUrl } from "./lib/commandRouter";
 import type { CommandResult } from "./lib/commandRouter";
-import { askAI } from "./lib/providerClient";
+import { routeViaAI } from "./lib/providerClient";
 import { speak } from "./lib/speechSynthesis";
 import { trackActivity } from "./lib/memory";
 import { closeTaskDialog, showTaskDialog } from "./lib/taskDialogWindow";
@@ -390,16 +390,22 @@ function NovaApp() {
 
           } else if (last.type === "ai_query") {
             trackActivity("ai", last.query);
-            const aiResponse = await askAI(last.query, providerConfig);
+            const aiResult = await routeViaAI(last.query, providerConfig);
             const latencyMs = Math.round(performance.now() - t0);
             addActionLog({ ts: Date.now(), type: "ai", label: last.query, latencyMs });
-            addMessage({ role: "ai", text: aiResponse, latencyMs });
-            setResponse(aiResponse);
-            setStatus("speaking");
-            speak(aiResponse, () => {
-              setStatus("idle");
-              resumeWakeWord();
-            });
+            if (aiResult.type === "youtube_play") {
+              await executeYouTubePlay(aiResult.query);
+            } else if (isDesktopAction(aiResult)) {
+              await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);
+            } else if (aiResult.type === "research") {
+              await executeResearchPlan(aiResult.topic, aiResult.steps);
+            } else {
+              const msg = aiResult.type === "os_action" ? aiResult.message : "Done.";
+              addMessage({ role: "ai", text: msg, latencyMs });
+              setResponse(msg);
+              setStatus("speaking");
+              speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+            }
           } else {
             throw new Error("Nested command chains are not supported.");
           }
@@ -437,17 +443,27 @@ function NovaApp() {
           });
 
         } else {
+          // ai_query: route through Claude tool use so OS requests ("open Spotify",
+          // "can you launch telegram") are executed instead of refused as chat.
           trackActivity("ai", result.query);
-          const aiResponse = await askAI(result.query, providerConfig);
+          const aiResult = await routeViaAI(result.query, providerConfig);
           const latencyMs = Math.round(performance.now() - t0);
           addActionLog({ ts: Date.now(), type: "ai", label: result.query, latencyMs });
-          addMessage({ role: "ai", text: aiResponse, latencyMs });
-          setResponse(aiResponse);
-          setStatus("speaking");
-          speak(aiResponse, () => {
-            setStatus("idle");
-            resumeWakeWord();
-          });
+
+          if (aiResult.type === "youtube_play") {
+            await executeYouTubePlay(aiResult.query);
+          } else if (isDesktopAction(aiResult)) {
+            await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);
+          } else if (aiResult.type === "research") {
+            await executeResearchPlan(aiResult.topic, aiResult.steps);
+          } else {
+            // os_action → spoken response
+            const msg = aiResult.type === "os_action" ? aiResult.message : "Done.";
+            addMessage({ role: "ai", text: msg, latencyMs });
+            setResponse(msg);
+            setStatus("speaking");
+            speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+          }
         }
       } catch (err) {
         clearPlan();

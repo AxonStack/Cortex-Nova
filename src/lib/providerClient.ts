@@ -84,6 +84,36 @@ function buildCliPrompt(systemPrompt: string, query: string): string {
   return `${systemPrompt}\n\n[User]\n${query}`;
 }
 
+async function askAnthropicVision(
+  query: string,
+  config: ProviderConfig,
+  images: ImageAttachment[],
+): Promise<string> {
+  if (config.provider !== "anthropic" || !config.apiKey) {
+    return "Image understanding requires the Anthropic provider. Please configure your API key in Setup.";
+  }
+  const client = new Anthropic({ apiKey: config.apiKey, dangerouslyAllowBrowser: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const content: any[] = images.map((img) => ({
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: img.mimeType,
+      data: img.dataUrl.includes(",") ? img.dataUrl.split(",")[1] : img.dataUrl,
+    },
+  }));
+  content.push({ type: "text", text: query });
+  const message = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 1024,
+    system: "You are Cortex Nova, a helpful voice assistant with vision. Describe and analyze images accurately and concisely. Respond conversationally in 2-4 sentences.",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    messages: [{ role: "user", content }] as any,
+  });
+  const block = message.content.find((b) => b.type === "text");
+  return block?.type === "text" ? block.text : "I couldn't analyze the image.";
+}
+
 async function askAnthropic(
   query: string,
   apiKey: string,
@@ -358,10 +388,11 @@ export async function routeViaAI(
   config: ProviderConfig,
   images?: ImageAttachment[],
 ): Promise<CommandResult> {
-  // Vision queries: send raw query + images directly — no binary brain decoration
+  // Vision queries: raw query + images, no decoration, no chat history
   if (images && images.length > 0) {
-    const visionQuery = query && query !== "(attachment)" ? query : "Please describe what you see in this image in detail.";
-    const reply = await askProvider(visionQuery, config, SYSTEM_PROMPT, images);
+    const isPlaceholder = !query || query === "(attachment)" || query === "(image attached)";
+    const visionQuery = isPlaceholder ? "Please describe what you see in this image in detail." : query;
+    const reply = await askAnthropicVision(visionQuery, config, images);
     return { type: "os_action", message: reply };
   }
   const plannedQuery = decorateQueryWithMemory(query);

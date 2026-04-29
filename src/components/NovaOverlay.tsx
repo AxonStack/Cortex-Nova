@@ -92,6 +92,7 @@ export function NovaChatInterface({
   // Active memory tab
   const [memTab, setMemTab] = useState<"universal" | "session" | "learned">("session");
   const [sidebarTab, setSidebarTab] = useState<"memory" | "permissions" | "brain">("memory");
+  const [sidebarPage, setSidebarPage] = useState<"overview" | "activity" | "workspace" | "settings">("overview");
 
   const uptime = useUptime(sessionStart);
 
@@ -335,8 +336,32 @@ export function NovaChatInterface({
 
             {/* Right: sidebar */}
             <aside className="rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-3 flex flex-col gap-3 overflow-y-auto min-h-0">
+              <div className="shrink-0 rounded-[12px] border border-black/25 dark:border-white/15 bg-[#ececec] dark:bg-[#242424] p-1">
+                <div className="grid grid-cols-2 gap-1">
+                  {([
+                    { id: "overview", label: "Overview" },
+                    { id: "activity", label: "Activity" },
+                    { id: "workspace", label: "Workspace" },
+                    { id: "settings", label: "Settings" },
+                  ] as const).map((page) => (
+                    <button
+                      key={page.id}
+                      type="button"
+                      onClick={() => setSidebarPage(page.id)}
+                      className={`text-[9px] tracking-widest uppercase px-2 py-1 rounded border transition-colors ${
+                        sidebarPage === page.id
+                          ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
+                          : "border-black/20 dark:border-white/20 text-black/45 dark:text-white/35 hover:border-black/50 dark:hover:border-white/50"
+                      }`}
+                    >
+                      {page.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {/* Session stats */}
+              {sidebarPage === "overview" && (
               <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3 shrink-0">
                 <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35 mb-2">Session</div>
                 <div className="grid grid-cols-4 gap-1.5">
@@ -368,8 +393,10 @@ export function NovaChatInterface({
                   )}
                 </div>
               </div>
+              )}
 
               {/* Action Log */}
+              {sidebarPage === "activity" && (
               <div className="shrink-0">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-[11px] tracking-[0.32em] uppercase text-black/60 dark:text-white/45">Action Log</h3>
@@ -398,8 +425,10 @@ export function NovaChatInterface({
                   </div>
                 )}
               </div>
+              )}
 
               {/* Memory panel with tabs */}
+              {sidebarPage === "workspace" && (
               <div className="flex-1 flex flex-col min-h-0">
                 <div className="flex items-center justify-between mb-2 shrink-0">
                   <div className="flex gap-1">
@@ -623,8 +652,10 @@ export function NovaChatInterface({
                   )}
                 </div>
               </div>
+              )}
 
               {/* Quick commands */}
+              {sidebarPage === "overview" && (
               <div className="shrink-0">
                 <h3 className="text-[11px] tracking-[0.32em] uppercase text-black/60 dark:text-white/45 mb-2">Quick Commands</h3>
                 <div className="flex flex-wrap gap-1.5">
@@ -640,8 +671,10 @@ export function NovaChatInterface({
                   ))}
                 </div>
               </div>
+              )}
 
               {/* Connection */}
+              {sidebarPage === "overview" || sidebarPage === "settings" ? (
               <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3 shrink-0">
                 <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35 mb-2">Connection</div>
                 <div className="flex items-center gap-2 mb-1">
@@ -653,6 +686,7 @@ export function NovaChatInterface({
                 )}
                 <div className="text-[11px] uppercase tracking-wide text-black/45 dark:text-white/35">{connLabel}</div>
               </div>
+              ) : null}
 
             </aside>
           </div>

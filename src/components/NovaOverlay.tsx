@@ -95,10 +95,8 @@ export function NovaChatInterface({
   const [memTab, setMemTab] = useState<"universal" | "session" | "learned">("session");
   const [sidebarPage, setSidebarPage] = useState<"home" | "permissions" | "brain">("home");
 
-  // Macro recording state
-  const [isRecording, setIsRecording] = useState(false);
-  const [pendingMacroName, setPendingMacroName] = useState("");
-  const [pendingEvents, setPendingEvents] = useState<RecordedInputEvent[] | null>(null);
+  // Learning mode — when ON, polls input events every 15 s and auto-saves named segments
+  const [learningMode, setLearningMode] = useState(false);
 
   const uptime = useUptime(sessionStart);
 
@@ -194,34 +192,43 @@ export function NovaChatInterface({
     setInputText((v) => v);
   }
 
-  async function handleStartRecording() {
-    try {
-      await invoke("start_input_recording");
-      setIsRecording(true);
-      setPendingEvents(null);
-      setPendingMacroName("");
-    } catch (e) {
-      window.alert(`Recording failed to start: ${e}`);
-    }
+  function autoNameEvents(events: RecordedInputEvent[]): string {
+    const keys = events.filter((e) => e.kind === "KeyPress").map((e) => e.key ?? "");
+    const hasCtrlEnter = keys.some((k) => k === "Return") && keys.some((k) => k === "ControlLeft" || k === "ControlRight");
+    const hasCtrlC = keys.some((k) => k === "KeyC") && keys.some((k) => k === "ControlLeft" || k === "ControlRight");
+    const hasCtrlV = keys.some((k) => k === "KeyV") && keys.some((k) => k === "ControlLeft" || k === "ControlRight");
+    const clicks = events.filter((e) => e.kind === "MouseClick").length;
+    const letterKeys = keys.filter((k) => /^Key[A-Z]$/.test(k)).length;
+    const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (hasCtrlEnter) return `Send / Submit — ${t}`;
+    if (hasCtrlC && hasCtrlV) return `Copy-paste workflow — ${t}`;
+    if (clicks > 8) return `Click-heavy workflow — ${t}`;
+    if (letterKeys > 20) return `Typing workflow — ${t}`;
+    return `Workflow at ${t}`;
   }
 
-  async function handleStopRecording() {
-    try {
-      const events = await invoke<RecordedInputEvent[]>("stop_input_recording");
-      setIsRecording(false);
-      setPendingEvents(events);
-    } catch (e) {
-      setIsRecording(false);
-      window.alert(`Failed to stop recording: ${e}`);
+  useEffect(() => {
+    if (!learningMode) {
+      invoke("stop_input_recording").catch(() => {});
+      return;
     }
-  }
-
-  function handleSaveMacro() {
-    if (!pendingEvents || !pendingMacroName.trim()) return;
-    saveMacro({ name: pendingMacroName.trim(), events: pendingEvents });
-    setPendingEvents(null);
-    setPendingMacroName("");
-  }
+    invoke("start_input_recording").catch(() => {});
+    const interval = setInterval(async () => {
+      try {
+        const events = await invoke<RecordedInputEvent[]>("stop_input_recording");
+        if (events.length > 3) {
+          saveMacro({ name: autoNameEvents(events), events });
+        }
+        await invoke("start_input_recording");
+      } catch {
+        // silently skip failed poll cycles
+      }
+    }, 15000);
+    return () => {
+      clearInterval(interval);
+      invoke("stop_input_recording").catch(() => {});
+    };
+  }, [learningMode]);
 
   return (
     <div className="h-screen bg-[#d8d8d8] dark:bg-[#0f0f0f] p-4 sm:p-6 font-mono flex flex-col transition-colors duration-200 overflow-hidden">
@@ -387,64 +394,34 @@ export function NovaChatInterface({
               {/* Macro Learning */}
               <div className="flex flex-col gap-2">
                 <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Macro Learning</div>
-                <div className="rounded-[10px] border border-black/20 dark:border-white/15 bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 text-[10px] text-black/50 dark:text-white/40 leading-relaxed">
-                  Activate recording, perform a workflow on your computer, then stop and name it. Cortex will replay it on command.
-                </div>
 
-                {/* Record controls */}
-                {!pendingEvents && (
-                  <button
-                    type="button"
-                    onClick={isRecording ? handleStopRecording : handleStartRecording}
-                    className={`w-full py-2.5 rounded-[10px] border text-[10px] tracking-widest uppercase transition-colors font-medium ${
-                      isRecording
-                        ? "border-red-500/60 bg-red-500/10 text-red-600 dark:text-red-400 animate-pulse"
-                        : "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black hover:opacity-80"
-                    }`}
-                  >
-                    {isRecording ? "◼ Stop Recording" : "⏺ Start Recording"}
-                  </button>
-                )}
-
-                {/* Save pending recording */}
-                {pendingEvents && (
-                  <div className="flex flex-col gap-2">
-                    <div className="rounded-[10px] border border-black/20 dark:border-white/15 bg-[#ececec] dark:bg-[#242424] px-3 py-2.5">
-                      <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Captured</div>
-                      <div className="text-[18px] font-bold text-black dark:text-[#e8e8e8] tabular-nums">{pendingEvents.length}</div>
-                      <div className="text-[10px] text-black/45 dark:text-white/35">input events recorded</div>
+                {/* Single toggle */}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={learningMode}
+                  onClick={() => setLearningMode((v) => !v)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-[10px] border transition-colors ${
+                    learningMode
+                      ? "border-green-600/60 bg-green-500/10"
+                      : "border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424]"
+                  }`}
+                >
+                  <div className="text-left">
+                    <div className={`text-[11px] font-medium ${learningMode ? "text-green-700 dark:text-green-300" : "text-black/80 dark:text-white/65"}`}>
+                      Learning Mode
                     </div>
-                    <input
-                      type="text"
-                      value={pendingMacroName}
-                      onChange={(e) => setPendingMacroName(e.target.value)}
-                      placeholder='Name this workflow, e.g. "Send Telegram message"'
-                      className="w-full rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 text-[11px] text-black dark:text-[#e8e8e8] placeholder-black/35 dark:placeholder-white/25 outline-none"
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={handleSaveMacro}
-                        disabled={!pendingMacroName.trim()}
-                        className="flex-1 py-2 rounded-[10px] border border-black dark:border-white bg-black dark:bg-white text-white dark:text-black text-[10px] tracking-widest uppercase disabled:opacity-30 transition-colors"
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setPendingEvents(null); setPendingMacroName(""); }}
-                        className="px-3 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-[10px] tracking-widest uppercase text-black/50 dark:text-white/40 transition-colors"
-                      >
-                        Discard
-                      </button>
+                    <div className="text-[9px] text-black/45 dark:text-white/35 mt-0.5">
+                      {learningMode ? "Watching your keyboard & mouse…" : "Tap to start learning your workflows"}
                     </div>
                   </div>
-                )}
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${learningMode ? "bg-green-500 animate-pulse" : "bg-black/25 dark:bg-white/25"}`} />
+                </button>
 
                 {/* Saved macros */}
                 {learnedMacros.length > 0 && (
                   <div className="flex flex-col gap-1.5 mt-1">
-                    <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25">{learnedMacros.length} saved</div>
+                    <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25">{learnedMacros.length} learned</div>
                     {learnedMacros.map((macro) => (
                       <div key={macro.id} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 flex items-center justify-between gap-2">
                         <div className="min-w-0">
@@ -463,9 +440,9 @@ export function NovaChatInterface({
                   </div>
                 )}
 
-                {learnedMacros.length === 0 && !pendingEvents && !isRecording && (
+                {learnedMacros.length === 0 && !learningMode && (
                   <div className="rounded-[12px] border border-dashed border-black/25 dark:border-white/15 px-3 py-3 text-[10px] text-black/35 dark:text-white/25 text-center">
-                    No macros saved yet
+                    Enable learning mode and Cortex will start identifying your workflows automatically
                   </div>
                 )}
               </div>

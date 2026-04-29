@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useNovaStore } from "../store/novaStore";
 import { WaveformAnimation } from "./WaveformAnimation";
 import { StatusIndicator } from "./StatusIndicator";
@@ -7,7 +8,7 @@ import {
   getRecentSearches, getBehaviorPatterns,
   type Memory, type TempEntry, type BehaviorPattern,
 } from "../lib/memory";
-import type { ActionLogEntry } from "../store/novaStore";
+import type { ActionLogEntry, RecordedInputEvent } from "../store/novaStore";
 import { TaskPlanPanel } from "./TaskPlanPanel";
 import { getBinaryBrainStats, exportBinaryBrain, importBinaryBrain, resetBinaryBrain } from "../lib/binaryBrain";
 
@@ -75,6 +76,7 @@ export function NovaChatInterface({
     status, transcript, messages, errorMessage,
     providerConfig, theme, toggleTheme,
     actionLog, sessionStart, activePlan, permissions, setPermission, binaryBrain, setBinaryBrainEnabled,
+    learnedMacros, saveMacro, deleteMacro,
   } = useNovaStore();
 
   const isWaveformActive = status === "listening" || status === "speaking";
@@ -92,6 +94,11 @@ export function NovaChatInterface({
   // Active memory tab
   const [memTab, setMemTab] = useState<"universal" | "session" | "learned">("session");
   const [sidebarPage, setSidebarPage] = useState<"home" | "permissions" | "brain">("home");
+
+  // Macro recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [pendingMacroName, setPendingMacroName] = useState("");
+  const [pendingEvents, setPendingEvents] = useState<RecordedInputEvent[] | null>(null);
 
   const uptime = useUptime(sessionStart);
 
@@ -185,6 +192,35 @@ export function NovaChatInterface({
     resetBinaryBrain();
     window.alert("Binary brain reset.");
     setInputText((v) => v);
+  }
+
+  async function handleStartRecording() {
+    try {
+      await invoke("start_input_recording");
+      setIsRecording(true);
+      setPendingEvents(null);
+      setPendingMacroName("");
+    } catch (e) {
+      window.alert(`Recording failed to start: ${e}`);
+    }
+  }
+
+  async function handleStopRecording() {
+    try {
+      const events = await invoke<RecordedInputEvent[]>("stop_input_recording");
+      setIsRecording(false);
+      setPendingEvents(events);
+    } catch (e) {
+      setIsRecording(false);
+      window.alert(`Failed to stop recording: ${e}`);
+    }
+  }
+
+  function handleSaveMacro() {
+    if (!pendingEvents || !pendingMacroName.trim()) return;
+    saveMacro({ name: pendingMacroName.trim(), events: pendingEvents });
+    setPendingEvents(null);
+    setPendingMacroName("");
   }
 
   return (
@@ -308,37 +344,130 @@ export function NovaChatInterface({
 
           {/* Brain page */}
           {sidebarPage === "brain" && (
-            <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
-              <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Binary Coprocessor</div>
-              <label className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 flex items-start gap-2.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={binaryBrain.enabled}
-                  onChange={(e) => setBinaryBrainEnabled(e.target.checked)}
-                  className="mt-0.5"
-                />
-                <div>
-                  <div className="text-[12px] text-black/80 dark:text-white/65">Enable Binary Coprocessor</div>
-                  <div className="text-[10px] text-black/45 dark:text-white/35 mt-0.5">Learns local intent patterns and adds planner hints.</div>
+            <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-4 overflow-y-auto">
+
+              {/* Binary Coprocessor */}
+              <div className="flex flex-col gap-2">
+                <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Binary Coprocessor</div>
+                <label className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={binaryBrain.enabled}
+                    onChange={(e) => setBinaryBrainEnabled(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <div className="text-[12px] text-black/80 dark:text-white/65">Enable Binary Coprocessor</div>
+                    <div className="text-[10px] text-black/45 dark:text-white/35 mt-0.5">Learns local intent patterns and adds planner hints.</div>
+                  </div>
+                </label>
+                <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5">
+                  <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
+                  <div className="text-[22px] font-bold text-black dark:text-[#e8e8e8] tabular-nums mt-0.5">{brainStats.trainedSamples}</div>
+                  <div className="mt-2 text-[9px] text-black/45 dark:text-white/35 uppercase tracking-widest">Recent intents</div>
+                  <div className="mt-1 space-y-1">
+                    {brainStats.topIntents.slice(0, 4).map((intent) => (
+                      <div key={intent} className="text-[11px] text-black/70 dark:text-white/55 line-clamp-1">{intent}</div>
+                    ))}
+                    {brainStats.topIntents.length === 0 && (
+                      <div className="text-[11px] text-black/45 dark:text-white/35">No training data yet</div>
+                    )}
+                  </div>
                 </div>
-              </label>
-              <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5">
-                <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
-                <div className="text-[22px] font-bold text-black dark:text-[#e8e8e8] tabular-nums mt-0.5">{brainStats.trainedSamples}</div>
-                <div className="mt-2 text-[9px] text-black/45 dark:text-white/35 uppercase tracking-widest">Recent intents</div>
-                <div className="mt-1 space-y-1">
-                  {brainStats.topIntents.slice(0, 6).map((intent) => (
-                    <div key={intent} className="text-[11px] text-black/70 dark:text-white/55 line-clamp-1">{intent}</div>
-                  ))}
-                  {brainStats.topIntents.length === 0 && (
-                    <div className="text-[11px] text-black/45 dark:text-white/35">No training data yet</div>
-                  )}
+                <div className="flex gap-2">
+                  <button type="button" onClick={handleExportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Export</button>
+                  <button type="button" onClick={handleImportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Import</button>
+                  <button type="button" onClick={handleResetBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-red-500/40 text-red-700 dark:text-red-300 hover:border-red-600/60 transition-colors">Reset</button>
                 </div>
               </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={handleExportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Export</button>
-                <button type="button" onClick={handleImportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Import</button>
-                <button type="button" onClick={handleResetBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-red-500/40 text-red-700 dark:text-red-300 hover:border-red-600/60 transition-colors">Reset</button>
+
+              {/* Divider */}
+              <div className="border-t border-black/10 dark:border-white/10" />
+
+              {/* Macro Learning */}
+              <div className="flex flex-col gap-2">
+                <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Macro Learning</div>
+                <div className="rounded-[10px] border border-black/20 dark:border-white/15 bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 text-[10px] text-black/50 dark:text-white/40 leading-relaxed">
+                  Activate recording, perform a workflow on your computer, then stop and name it. Cortex will replay it on command.
+                </div>
+
+                {/* Record controls */}
+                {!pendingEvents && (
+                  <button
+                    type="button"
+                    onClick={isRecording ? handleStopRecording : handleStartRecording}
+                    className={`w-full py-2.5 rounded-[10px] border text-[10px] tracking-widest uppercase transition-colors font-medium ${
+                      isRecording
+                        ? "border-red-500/60 bg-red-500/10 text-red-600 dark:text-red-400 animate-pulse"
+                        : "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black hover:opacity-80"
+                    }`}
+                  >
+                    {isRecording ? "◼ Stop Recording" : "⏺ Start Recording"}
+                  </button>
+                )}
+
+                {/* Save pending recording */}
+                {pendingEvents && (
+                  <div className="flex flex-col gap-2">
+                    <div className="rounded-[10px] border border-black/20 dark:border-white/15 bg-[#ececec] dark:bg-[#242424] px-3 py-2.5">
+                      <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Captured</div>
+                      <div className="text-[18px] font-bold text-black dark:text-[#e8e8e8] tabular-nums">{pendingEvents.length}</div>
+                      <div className="text-[10px] text-black/45 dark:text-white/35">input events recorded</div>
+                    </div>
+                    <input
+                      type="text"
+                      value={pendingMacroName}
+                      onChange={(e) => setPendingMacroName(e.target.value)}
+                      placeholder='Name this workflow, e.g. "Send Telegram message"'
+                      className="w-full rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 text-[11px] text-black dark:text-[#e8e8e8] placeholder-black/35 dark:placeholder-white/25 outline-none"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveMacro}
+                        disabled={!pendingMacroName.trim()}
+                        className="flex-1 py-2 rounded-[10px] border border-black dark:border-white bg-black dark:bg-white text-white dark:text-black text-[10px] tracking-widest uppercase disabled:opacity-30 transition-colors"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setPendingEvents(null); setPendingMacroName(""); }}
+                        className="px-3 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-[10px] tracking-widest uppercase text-black/50 dark:text-white/40 transition-colors"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Saved macros */}
+                {learnedMacros.length > 0 && (
+                  <div className="flex flex-col gap-1.5 mt-1">
+                    <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25">{learnedMacros.length} saved</div>
+                    {learnedMacros.map((macro) => (
+                      <div key={macro.id} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] text-black/80 dark:text-white/65 truncate">{macro.name}</div>
+                          <div className="text-[9px] text-black/35 dark:text-white/25">{macro.events.length} events · {new Date(macro.createdAt).toLocaleDateString()}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => deleteMacro(macro.id)}
+                          className="shrink-0 text-[9px] px-2 py-1 rounded border border-red-500/30 text-red-600 dark:text-red-400 hover:border-red-500/60 transition-colors"
+                        >
+                          Del
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {learnedMacros.length === 0 && !pendingEvents && !isRecording && (
+                  <div className="rounded-[12px] border border-dashed border-black/25 dark:border-white/15 px-3 py-3 text-[10px] text-black/35 dark:text-white/25 text-center">
+                    No macros saved yet
+                  </div>
+                )}
               </div>
             </div>
           )}

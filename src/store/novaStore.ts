@@ -53,6 +53,22 @@ export interface BinaryBrainConfig {
   enabled: boolean;
 }
 
+export interface RecordedInputEvent {
+  kind: "KeyPress" | "MouseClick";
+  key?: string;
+  x?: number;
+  y?: number;
+  button?: string;
+  ts: number;
+}
+
+export interface LearnedMacro {
+  id: string;
+  name: string;
+  createdAt: number;
+  events: RecordedInputEvent[];
+}
+
 const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
   provider: "ollama",
   apiKey: "",
@@ -99,6 +115,10 @@ interface NovaState {
   resetSetup: () => void;
   toggleTheme: () => void;
   setBackgroundListening: (enabled: boolean) => void;
+
+  learnedMacros: LearnedMacro[];
+  saveMacro: (macro: Omit<LearnedMacro, "id" | "createdAt">) => void;
+  deleteMacro: (id: string) => void;
 }
 
 const DEFAULT_PERMISSIONS: AutomationPermissions = {
@@ -127,6 +147,7 @@ export const useNovaStore = create<NovaState>()(
       isSetupComplete: false,
       theme: "light",
       backgroundListening: false,
+      learnedMacros: [],
 
       setStatus: (status) => set({ status }),
       setTranscript: (transcript) => set({ transcript }),
@@ -164,6 +185,15 @@ export const useNovaStore = create<NovaState>()(
       resetSetup: () => set({ isSetupComplete: false, providerConfig: DEFAULT_PROVIDER_CONFIG }),
       toggleTheme: () => set((s) => ({ theme: s.theme === "light" ? "dark" : "light" })),
       setBackgroundListening: (backgroundListening) => set({ backgroundListening }),
+      saveMacro: (macro) =>
+        set((s) => ({
+          learnedMacros: [
+            ...s.learnedMacros,
+            { ...macro, id: crypto.randomUUID(), createdAt: Date.now() },
+          ],
+        })),
+      deleteMacro: (id) =>
+        set((s) => ({ learnedMacros: s.learnedMacros.filter((m) => m.id !== id) })),
     }),
     {
       name: "nova-config",
@@ -174,6 +204,7 @@ export const useNovaStore = create<NovaState>()(
         isSetupComplete: state.isSetupComplete,
         theme: state.theme,
         backgroundListening: state.backgroundListening,
+        learnedMacros: state.learnedMacros,
       }),
     }
   )

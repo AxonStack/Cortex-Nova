@@ -2,7 +2,8 @@ use enigo::{Enigo, Key, Keyboard, Mouse, Settings, Button, Coordinate};
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 // ── Managed state ─────────────────────────────────────────────────────────────
@@ -14,6 +15,80 @@ struct RecordingState(Mutex<Option<std::process::Child>>);
 
 /// Caches discovered Linux desktop launcher IDs to improve app-open reliability.
 struct AppDiscoveryCache(Mutex<(Instant, Vec<String>)>);
+
+/// Captured input events during a macro recording session.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(tag = "kind")]
+enum InputEvent {
+    KeyPress { key: String, ts: u64 },
+    MouseClick { x: f64, y: f64, button: String, ts: u64 },
+}
+
+struct InputRecordingState {
+    active: AtomicBool,
+    events: Mutex<Vec<InputEvent>>,
+}
+
+impl InputRecordingState {
+    fn new() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+            events: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+static INPUT_RECORDING: std::sync::OnceLock<Arc<InputRecordingState>> = std::sync::OnceLock::new();
+static LISTENER_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn get_input_state() -> Arc<InputRecordingState> {
+    INPUT_RECORDING.get_or_init(|| Arc::new(InputRecordingState::new())).clone()
+}
+
+fn ensure_listener_running() {
+    if LISTENER_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let state = get_input_state();
+    std::thread::spawn(move || {
+        let _ = rdev::listen(move |event| {
+            if !state.active.load(Ordering::SeqCst) {
+                return;
+            }
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let entry = match event.event_type {
+                rdev::EventType::KeyPress(key) => {
+                    let name = format!("{:?}", key);
+                    // Skip pure modifier presses — they're captured with the key they modify
+                    if matches!(name.as_str(), "ShiftLeft"|"ShiftRight"|"ControlLeft"|"ControlRight"|"Alt"|"MetaLeft"|"MetaRight") {
+                        return;
+                    }
+                    Some(InputEvent::KeyPress { key: name, ts })
+                }
+                rdev::EventType::ButtonPress(btn) => {
+                    let pos = match &event.event_type {
+                        _ => (0.0_f64, 0.0_f64),
+                    };
+                    Some(InputEvent::MouseClick {
+                        x: pos.0,
+                        y: pos.1,
+                        button: format!("{:?}", btn),
+                        ts,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(e) = entry {
+                if let Ok(mut lock) = state.events.lock() {
+                    lock.push(e);
+                }
+            }
+        });
+    });
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -932,6 +1007,25 @@ fn ask_via_cli(cli: String, prompt: String) -> Result<String, String> {
     }
 }
 
+/// Start recording keyboard and mouse input events for macro learning.
+#[tauri::command]
+fn start_input_recording() -> Result<(), String> {
+    let state = get_input_state();
+    state.events.lock().unwrap().clear();
+    state.active.store(true, Ordering::SeqCst);
+    ensure_listener_running();
+    Ok(())
+}
+
+/// Stop recording and return captured events as JSON.
+#[tauri::command]
+fn stop_input_recording() -> Result<Vec<InputEvent>, String> {
+    let state = get_input_state();
+    state.active.store(false, Ordering::SeqCst);
+    let events = state.events.lock().unwrap().clone();
+    Ok(events)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -978,6 +1072,8 @@ pub fn run() {
             ask_via_cli,
             start_oauth_server,
             collect_oauth_callback,
+            start_input_recording,
+            stop_input_recording,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

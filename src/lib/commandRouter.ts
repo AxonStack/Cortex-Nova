@@ -336,6 +336,18 @@ const OS_PATTERNS: Array<{
     handler: async (match) => ({ type: "youtube_play", query: match[1].trim() }),
   },
 
+  // ── Email: send composed email (Gmail Ctrl+Enter shortcut) ──────────────
+  {
+    pattern: /^send(?: the| it| that| this)?(?:\s+email|\s+mail)?(?:\s+now|\s+please)?$/i,
+    handler: async () => ({
+      type: "command_chain",
+      steps: [
+        { type: "desktop_focus_window", name: "chrome", label: "Focusing Chrome" },
+        { type: "desktop_press_key", keys: "ctrl+Return", label: "Sending email (Ctrl+Enter)" },
+      ] as CommandResult[],
+    }),
+  },
+
   // ── Email: compose with body ─────────────────────────────────────────────
   {
     pattern: /^email (.+?) (?:about|re|regarding) (.+?) (?:saying|with body|that) (.+)/i,

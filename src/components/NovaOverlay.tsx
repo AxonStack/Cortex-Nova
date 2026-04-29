@@ -91,8 +91,7 @@ export function NovaChatInterface({
 
   // Active memory tab
   const [memTab, setMemTab] = useState<"universal" | "session" | "learned">("session");
-  const [sidebarTab, setSidebarTab] = useState<"memory" | "permissions" | "brain">("memory");
-  const [sidebarPage, setSidebarPage] = useState<"overview" | "activity" | "workspace" | "settings">("overview");
+  const [sidebarPage, setSidebarPage] = useState<"home" | "permissions" | "brain">("home");
 
   const uptime = useUptime(sessionStart);
 
@@ -256,7 +255,97 @@ export function NovaChatInterface({
             </div>
           </div>
 
-          {/* Main grid */}
+          {/* Page nav + content */}
+          <div className="flex gap-3 flex-1 min-h-0">
+
+          {/* Left nav */}
+          <nav className="rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-2 flex flex-col gap-1.5 shrink-0 w-[58px]">
+            {([
+              { id: "home", label: "Home" },
+              { id: "permissions", label: "Perms" },
+              { id: "brain", label: "Brain" },
+            ] as const).map((page) => (
+              <button
+                key={page.id}
+                type="button"
+                onClick={() => setSidebarPage(page.id)}
+                className={`text-[8px] tracking-widest uppercase py-3 px-1 rounded-[10px] border transition-colors text-center leading-tight w-full ${
+                  sidebarPage === page.id
+                    ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
+                    : "border-black/20 dark:border-white/20 text-black/45 dark:text-white/35 hover:border-black/50 dark:hover:border-white/50"
+                }`}
+              >
+                {page.label}
+              </button>
+            ))}
+          </nav>
+
+          {/* Permissions page */}
+          {sidebarPage === "permissions" && (
+            <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
+              <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Access Controls</div>
+              {([
+                { key: "desktopAutomation", label: "Desktop Automation", detail: "Master switch for OS control tasks" },
+                { key: "appControl", label: "Open/Close Apps", detail: "Allow launching and closing apps" },
+                { key: "browserControl", label: "Browser Navigation", detail: "Allow opening URLs and web flows" },
+                { key: "keyboardMouseControl", label: "Keyboard/Mouse", detail: "Allow typing, shortcuts, and clicks" },
+              ] as const).map((item) => (
+                <label key={item.key} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={permissions[item.key]}
+                    onChange={(e) => setPermission(item.key, e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[12px] text-black/80 dark:text-white/65">{item.label}</div>
+                    <div className="text-[10px] text-black/45 dark:text-white/35 mt-0.5">{item.detail}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+
+          {/* Brain page */}
+          {sidebarPage === "brain" && (
+            <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
+              <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Binary Coprocessor</div>
+              <label className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={binaryBrain.enabled}
+                  onChange={(e) => setBinaryBrainEnabled(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <div>
+                  <div className="text-[12px] text-black/80 dark:text-white/65">Enable Binary Coprocessor</div>
+                  <div className="text-[10px] text-black/45 dark:text-white/35 mt-0.5">Learns local intent patterns and adds planner hints.</div>
+                </div>
+              </label>
+              <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5">
+                <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
+                <div className="text-[22px] font-bold text-black dark:text-[#e8e8e8] tabular-nums mt-0.5">{brainStats.trainedSamples}</div>
+                <div className="mt-2 text-[9px] text-black/45 dark:text-white/35 uppercase tracking-widest">Recent intents</div>
+                <div className="mt-1 space-y-1">
+                  {brainStats.topIntents.slice(0, 6).map((intent) => (
+                    <div key={intent} className="text-[11px] text-black/70 dark:text-white/55 line-clamp-1">{intent}</div>
+                  ))}
+                  {brainStats.topIntents.length === 0 && (
+                    <div className="text-[11px] text-black/45 dark:text-white/35">No training data yet</div>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={handleExportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Export</button>
+                <button type="button" onClick={handleImportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Import</button>
+                <button type="button" onClick={handleResetBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-red-500/40 text-red-700 dark:text-red-300 hover:border-red-600/60 transition-colors">Reset</button>
+              </div>
+            </div>
+          )}
+
+          {/* Home page */}
+          {sidebarPage === "home" && (
+          <div className="flex-1 flex flex-col gap-3 min-h-0">
           <div className="grid grid-cols-1 md:grid-cols-[1fr_310px] gap-3 flex-1 min-h-0">
 
             {/* Left: chat */}
@@ -336,32 +425,8 @@ export function NovaChatInterface({
 
             {/* Right: sidebar */}
             <aside className="rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-3 flex flex-col gap-3 overflow-y-auto min-h-0">
-              <div className="shrink-0 rounded-[12px] border border-black/25 dark:border-white/15 bg-[#ececec] dark:bg-[#242424] p-1">
-                <div className="grid grid-cols-2 gap-1">
-                  {([
-                    { id: "overview", label: "Overview" },
-                    { id: "activity", label: "Activity" },
-                    { id: "workspace", label: "Workspace" },
-                    { id: "settings", label: "Settings" },
-                  ] as const).map((page) => (
-                    <button
-                      key={page.id}
-                      type="button"
-                      onClick={() => setSidebarPage(page.id)}
-                      className={`text-[9px] tracking-widest uppercase px-2 py-1 rounded border transition-colors ${
-                        sidebarPage === page.id
-                          ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
-                          : "border-black/20 dark:border-white/20 text-black/45 dark:text-white/35 hover:border-black/50 dark:hover:border-white/50"
-                      }`}
-                    >
-                      {page.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
 
               {/* Session stats */}
-              {sidebarPage === "overview" && (
               <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3 shrink-0">
                 <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35 mb-2">Session</div>
                 <div className="grid grid-cols-4 gap-1.5">
@@ -393,10 +458,8 @@ export function NovaChatInterface({
                   )}
                 </div>
               </div>
-              )}
 
               {/* Action Log */}
-              {sidebarPage === "activity" && (
               <div className="shrink-0">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-[11px] tracking-[0.32em] uppercase text-black/60 dark:text-white/45">Action Log</h3>
@@ -425,42 +488,21 @@ export function NovaChatInterface({
                   </div>
                 )}
               </div>
-              )}
 
-              {/* Memory panel with tabs */}
-              {sidebarPage === "workspace" && (
+              {/* Workspace — memory with TEMP / PERM / AUTO */}
               <div className="flex-1 flex flex-col min-h-0">
                 <div className="flex items-center justify-between mb-2 shrink-0">
-                  <div className="flex gap-1">
-                    {([
-                      { id: "memory", label: "MEMORY" },
-                      { id: "permissions", label: "PERMS" },
-                      { id: "brain", label: "BRAIN" },
-                    ] as const).map((tab) => (
-                      <button
-                        key={tab.id}
-                        onClick={() => setSidebarTab(tab.id)}
-                        className={`text-[9px] tracking-widest uppercase px-2 py-0.5 rounded border transition-colors ${
-                          sidebarTab === tab.id
-                            ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
-                            : "border-black/20 dark:border-white/20 text-black/40 dark:text-white/30 hover:border-black/50 dark:hover:border-white/50"
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
+                  <span className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Workspace</span>
                   <div className="flex gap-1">
                     {(["session", "universal", "learned"] as const).map((tab) => (
                       <button
                         key={tab}
                         onClick={() => setMemTab(tab)}
-                        disabled={sidebarTab !== "memory"}
                         className={`text-[9px] tracking-widest uppercase px-2 py-0.5 rounded border transition-colors ${
                           memTab === tab
                             ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
                             : "border-black/20 dark:border-white/20 text-black/40 dark:text-white/30 hover:border-black/50 dark:hover:border-white/50"
-                        } ${sidebarTab !== "memory" ? "opacity-30 cursor-not-allowed" : ""}`}
+                        }`}
                       >
                         {tab === "session" ? "TEMP" : tab === "universal" ? "PERM" : "AUTO"}
                       </button>
@@ -469,85 +511,8 @@ export function NovaChatInterface({
                 </div>
 
                 <div className="overflow-y-auto flex-1 space-y-1.5 min-h-0">
-                  {sidebarTab === "permissions" && (
-                    <div className="space-y-2">
-                      {([
-                        { key: "desktopAutomation", label: "Desktop Automation", detail: "Master switch for OS control tasks" },
-                        { key: "appControl", label: "Open/Close Apps", detail: "Allow launching and closing apps" },
-                        { key: "browserControl", label: "Browser Navigation", detail: "Allow opening URLs and web flows" },
-                        { key: "keyboardMouseControl", label: "Keyboard/Mouse", detail: "Allow typing, shortcuts, and clicks" },
-                      ] as const).map((item) => (
-                        <label key={item.key} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-2.5 py-2 flex items-start gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={permissions[item.key]}
-                            onChange={(e) => setPermission(item.key, e.target.checked)}
-                            className="mt-0.5"
-                          />
-                          <div className="min-w-0">
-                            <div className="text-[11px] text-black/80 dark:text-white/65">{item.label}</div>
-                            <div className="text-[9px] text-black/45 dark:text-white/35">{item.detail}</div>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-
-                  {sidebarTab === "brain" && (
-                    <div className="space-y-2">
-                      <label className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-2.5 py-2 flex items-start gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={binaryBrain.enabled}
-                          onChange={(e) => setBinaryBrainEnabled(e.target.checked)}
-                          className="mt-0.5"
-                        />
-                        <div>
-                          <div className="text-[11px] text-black/80 dark:text-white/65">Enable Binary Coprocessor</div>
-                          <div className="text-[9px] text-black/45 dark:text-white/35">Learns local intent patterns and adds planner hints.</div>
-                        </div>
-                      </label>
-                      <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-2.5 py-2">
-                        <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
-                        <div className="text-[18px] font-bold text-black dark:text-[#e8e8e8] tabular-nums">{brainStats.trainedSamples}</div>
-                        <div className="mt-1 text-[9px] text-black/45 dark:text-white/35">Recent intents</div>
-                        <div className="mt-1 space-y-1">
-                          {(brainStats.topIntents.slice(0, 4)).map((intent) => (
-                            <div key={intent} className="text-[10px] text-black/70 dark:text-white/55 line-clamp-1">{intent}</div>
-                          ))}
-                          {brainStats.topIntents.length === 0 && (
-                            <div className="text-[10px] text-black/45 dark:text-white/35">No training data yet</div>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex gap-1.5">
-                        <button
-                          type="button"
-                          onClick={handleExportBrain}
-                          className="flex-1 text-[9px] tracking-widest uppercase px-2 py-1 rounded border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50"
-                        >
-                          Export
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleImportBrain}
-                          className="flex-1 text-[9px] tracking-widest uppercase px-2 py-1 rounded border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50"
-                        >
-                          Import
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleResetBrain}
-                          className="flex-1 text-[9px] tracking-widest uppercase px-2 py-1 rounded border border-red-500/40 text-red-700 dark:text-red-300 hover:border-red-600/60"
-                        >
-                          Reset
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Session (temp) tab */}
-                  {sidebarTab === "memory" && memTab === "session" && (
+                  {/* TEMP */}
+                  {memTab === "session" && (
                     <>
                       {recentSearches.length > 0 && (
                         <div className="rounded-[10px] border border-black/20 dark:border-white/10 px-2.5 py-2 mb-2">
@@ -581,8 +546,8 @@ export function NovaChatInterface({
                     </>
                   )}
 
-                  {/* Universal (permanent) tab */}
-                  {sidebarTab === "memory" && memTab === "universal" && (
+                  {/* PERM */}
+                  {memTab === "universal" && (
                     <>
                       <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25 mb-1.5 px-0.5">
                         {totalMems} permanent memories
@@ -616,8 +581,8 @@ export function NovaChatInterface({
                     </>
                   )}
 
-                  {/* Auto-learned behavioral patterns */}
-                  {sidebarTab === "memory" && memTab === "learned" && (
+                  {/* AUTO */}
+                  {memTab === "learned" && (
                     <>
                       <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25 mb-1.5 px-0.5">
                         Topics Nova is learning about you
@@ -638,7 +603,6 @@ export function NovaChatInterface({
                                 <span className="text-[9px] text-black/30 dark:text-white/25 tabular-nums">{b.count}×</span>
                               </div>
                             </div>
-                            {/* Interest strength bar */}
                             <div className="mt-1.5 h-1 rounded-full bg-black/10 dark:bg-white/10">
                               <div
                                 className="h-full rounded-full bg-black/40 dark:bg-white/40 transition-all"
@@ -652,10 +616,8 @@ export function NovaChatInterface({
                   )}
                 </div>
               </div>
-              )}
 
               {/* Quick commands */}
-              {sidebarPage === "overview" && (
               <div className="shrink-0">
                 <h3 className="text-[11px] tracking-[0.32em] uppercase text-black/60 dark:text-white/45 mb-2">Quick Commands</h3>
                 <div className="flex flex-wrap gap-1.5">
@@ -671,10 +633,8 @@ export function NovaChatInterface({
                   ))}
                 </div>
               </div>
-              )}
 
               {/* Connection */}
-              {sidebarPage === "overview" || sidebarPage === "settings" ? (
               <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3 shrink-0">
                 <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35 mb-2">Connection</div>
                 <div className="flex items-center gap-2 mb-1">
@@ -686,7 +646,6 @@ export function NovaChatInterface({
                 )}
                 <div className="text-[11px] uppercase tracking-wide text-black/45 dark:text-white/35">{connLabel}</div>
               </div>
-              ) : null}
 
             </aside>
           </div>
@@ -720,6 +679,10 @@ export function NovaChatInterface({
             </div>
           </div>
 
+          </div>
+          )}
+
+          </div>
         </div>
       </div>
     </div>

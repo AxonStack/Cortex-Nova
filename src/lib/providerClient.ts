@@ -358,12 +358,13 @@ export async function routeViaAI(
   config: ProviderConfig,
   images?: ImageAttachment[],
 ): Promise<CommandResult> {
-  const plannedQuery = decorateQueryWithMemory(query);
-  // If images present, skip planner (vision queries are conversational, not action plans)
+  // Vision queries: send raw query + images directly — no binary brain decoration
   if (images && images.length > 0) {
-    const reply = await askProvider(plannedQuery, config, SYSTEM_PROMPT, images);
+    const visionQuery = query && query !== "(attachment)" ? query : "Please describe what you see in this image in detail.";
+    const reply = await askProvider(visionQuery, config, SYSTEM_PROMPT, images);
     return { type: "os_action", message: reply };
   }
+  const plannedQuery = decorateQueryWithMemory(query);
   const rawPlan = await askProvider(plannedQuery, config, ACTION_PLANNER_SYSTEM);
   const planned = parsePlannerResponse(rawPlan);
 

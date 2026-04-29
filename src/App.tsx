@@ -755,7 +755,7 @@ function NovaApp() {
     if (attachments && attachments.length > 0) {
       pendingAttachmentsRef.current = attachments;
     }
-    setTranscript(text.trim() || "(attachment)");
+    setTranscript(text.trim() || "(image attached)");
     setStatus("listening");
   }
 

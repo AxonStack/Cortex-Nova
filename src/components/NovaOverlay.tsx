@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+
+export interface Attachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string; // base64 data URL
+}
 import { useNovaStore } from "../store/novaStore";
 import { WaveformAnimation } from "./WaveformAnimation";
 import { StatusIndicator } from "./StatusIndicator";
@@ -17,7 +24,7 @@ interface NovaChatInterfaceProps {
   voiceSupported: boolean | null;
   backgroundListening: boolean;
   ollamaConnected: boolean | null;
-  onSubmitText: (text: string) => void;
+  onSubmitText: (text: string, attachments?: Attachment[]) => void;
   onToggleBackgroundListening: () => void;
   onClearChat: () => void;
   onResetSetup: () => void;
@@ -83,6 +90,8 @@ export function NovaChatInterface({
   const isBusy = status === "listening" || status === "processing" || status === "speaking";
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [inputText, setInputText] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Memory state
   const [universalMems, setUniversalMems] = useState<Memory[]>([]);
@@ -112,11 +121,48 @@ export function NovaChatInterface({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  function readFileAsDataUrl(file: File): Promise<Attachment> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        id: crypto.randomUUID(),
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+        dataUrl: reader.result as string,
+      });
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    const loaded = await Promise.all(files.map(readFileAsDataUrl));
+    setAttachments((prev) => [...prev, ...loaded]);
+    e.target.value = "";
+  }
+
+  async function handlePaste(e: React.ClipboardEvent) {
+    const items = Array.from(e.clipboardData.items);
+    const imageItems = items.filter((item) => item.type.startsWith("image/"));
+    if (imageItems.length === 0) return;
+    e.preventDefault();
+    const loaded = await Promise.all(
+      imageItems.map((item) => {
+        const file = item.getAsFile();
+        if (!file) return null;
+        return readFileAsDataUrl(new File([file], `clipboard-${Date.now()}.png`, { type: item.type }));
+      })
+    );
+    setAttachments((prev) => [...prev, ...(loaded.filter(Boolean) as Attachment[])]);
+  }
+
   function handleSend() {
     const text = inputText.trim();
-    if (!text || isBusy) return;
-    onSubmitText(text);
+    if ((!text && attachments.length === 0) || isBusy) return;
+    onSubmitText(text, attachments.length > 0 ? attachments : undefined);
     setInputText("");
+    setAttachments([]);
   }
 
   const cfg = providerConfig;
@@ -758,17 +804,67 @@ export function NovaChatInterface({
 
           {/* Input bar */}
           <div className="rounded-[16px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-2 shrink-0">
-            <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 flex items-center gap-3">
+            {/* Attachment previews */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2 px-1">
+                {attachments.map((att) => (
+                  <div key={att.id} className="relative group">
+                    {att.mimeType.startsWith("image/") ? (
+                      <img
+                        src={att.dataUrl}
+                        alt={att.name}
+                        className="h-14 w-14 object-cover rounded-[8px] border border-black/30 dark:border-white/20"
+                      />
+                    ) : (
+                      <div className="h-14 px-2 flex flex-col items-center justify-center rounded-[8px] border border-black/30 dark:border-white/20 bg-[#ececec] dark:bg-[#242424]">
+                        <span className="text-[16px]">📄</span>
+                        <span className="text-[8px] text-black/50 dark:text-white/40 truncate max-w-[56px]">{att.name}</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setAttachments((prev) => prev.filter((a) => a.id !== att.id))}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-black dark:bg-white text-white dark:text-black text-[9px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 flex items-center gap-2">
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,application/pdf,text/plain,text/markdown,.md"
+                multiple
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+              {/* Attach button */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isBusy || !!activePlan}
+                title="Attach image or document"
+                className="shrink-0 text-[16px] text-black/40 dark:text-white/35 hover:text-black dark:hover:text-white transition-colors disabled:opacity-30"
+              >
+                📎
+              </button>
+
               <input
                 type="text"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }}
+                onPaste={handlePaste}
                 placeholder={
                   isHoldingSpace ? "Listening… release Space when done"
                   : isBusy ? "Processing…"
                   : activePlan ? activePlan.type === "youtube_play" ? "Playing media — please wait…" : activePlan.type === "desktop_task" ? "Desktop task running — please wait…" : "Researching — please wait…"
-                  : 'Ask anything or say "get me articles about…"'
+                  : 'Ask anything, attach an image, or paste from clipboard…'
                 }
                 disabled={isBusy || !!activePlan}
                 className="flex-1 bg-transparent text-[12px] text-black dark:text-[#e8e8e8] placeholder-black/35 dark:placeholder-white/25 outline-none tracking-wide disabled:opacity-50"
@@ -777,7 +873,7 @@ export function NovaChatInterface({
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!inputText.trim() || isBusy || !!activePlan}
+                disabled={(!inputText.trim() && attachments.length === 0) || isBusy || !!activePlan}
                 className="shrink-0 px-5 py-2 rounded-[12px] border border-black dark:border-[#e8e8e8] bg-black dark:bg-[#e8e8e8] text-[12px] tracking-[0.2em] uppercase text-white dark:text-black transition-opacity disabled:opacity-25 disabled:cursor-not-allowed hover:opacity-80"
               >
                 Send

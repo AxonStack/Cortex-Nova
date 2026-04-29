@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NovaChatInterface } from "./components/NovaOverlay";
+import { NovaChatInterface, type Attachment } from "./components/NovaOverlay";
 import { SetupWizard } from "./components/SetupWizard";
 import { useVoiceListener } from "./hooks/useVoiceListener";
 import { useNovaStore } from "./store/novaStore";
@@ -18,6 +18,7 @@ function NovaApp() {
   const [isHoldingSpace, setIsHoldingSpace] = useState(false);
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const holdSpaceRef = useRef(false);
+  const pendingAttachmentsRef = useRef<Attachment[]>([]);
 
   const {
     status, transcript, providerConfig,
@@ -513,11 +514,38 @@ function NovaApp() {
     if (status !== "listening" || !transcript.trim() || isHoldingSpace) return;
 
     const handle = async () => {
+      const attachments = pendingAttachmentsRef.current.splice(0);
       addMessage({ role: "user", text: transcript });
       setStatus("processing");
       const t0 = performance.now();
 
       try {
+        // If there are image attachments, skip OS routing and go straight to AI vision
+        if (attachments.length > 0) {
+          const imageAtts = attachments.filter((a) => a.mimeType.startsWith("image/"));
+          const docAtts = attachments.filter((a) => !a.mimeType.startsWith("image/"));
+          const docContext = docAtts.map((a) => {
+            try {
+              const b64 = a.dataUrl.split(",")[1] ?? "";
+              return `[Document: ${a.name}]\n${atob(b64)}`;
+            } catch { return `[Document: ${a.name}]`; }
+          }).join("\n\n");
+          const queryWithDocs = docContext ? `${docContext}\n\n${transcript}` : transcript;
+          trackActivity("ai", queryWithDocs);
+          const aiResult = await routeViaAI(queryWithDocs, providerConfig, imageAtts);
+          const latencyMs = Math.round(performance.now() - t0);
+          addActionLog({ ts: Date.now(), type: "ai", label: transcript, latencyMs });
+          if (aiResult.type === "os_action") {
+            addMessage({ role: "ai", text: aiResult.message, latencyMs });
+            setResponse(aiResult.message);
+            setStatus("speaking");
+            speak(aiResult.message, () => { setStatus("idle"); resumeWakeWord(); });
+          } else if (isDesktopAction(aiResult)) {
+            await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);
+          }
+          return;
+        }
+
         const result = await routeCommand(transcript);
 
         if (result.type === "command_chain") {
@@ -722,9 +750,12 @@ function NovaApp() {
     };
   }, [voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, setTranscript, setResponse, setStatus]);
 
-  function submitText(text: string) {
-    if (!text.trim()) return;
-    setTranscript(text.trim());
+  function submitText(text: string, attachments?: Attachment[]) {
+    if (!text.trim() && (!attachments || attachments.length === 0)) return;
+    if (attachments && attachments.length > 0) {
+      pendingAttachmentsRef.current = attachments;
+    }
+    setTranscript(text.trim() || "(attachment)");
     setStatus("listening");
   }
 

@@ -84,17 +84,37 @@ function buildCliPrompt(systemPrompt: string, query: string): string {
   return `${systemPrompt}\n\n[User]\n${query}`;
 }
 
-async function askAnthropic(query: string, apiKey: string, systemPrompt = SYSTEM_PROMPT): Promise<string> {
+async function askAnthropic(
+  query: string,
+  apiKey: string,
+  systemPrompt = SYSTEM_PROMPT,
+  images?: Array<{ mimeType: string; dataUrl: string }>,
+): Promise<string> {
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
   const history = getChatHistory(query);
+
+  // Build user content: optional images followed by the text query
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const userContent: any[] = [];
+  if (images && images.length > 0) {
+    for (const img of images) {
+      const data = img.dataUrl.includes(",") ? img.dataUrl.split(",")[1] : img.dataUrl;
+      userContent.push({ type: "image", source: { type: "base64", media_type: img.mimeType, data } });
+    }
+  }
+  userContent.push({ type: "text", text: query });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const historyMessages: any[] = history.map((msg) => ({
+    role: msg.role === "ai" ? "assistant" : "user",
+    content: msg.text,
+  }));
   const message = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
     system: systemPrompt,
-    messages: history.map((msg) => ({
-      role: msg.role === "ai" ? ("assistant" as const) : ("user" as const),
-      content: msg.text,
-    })).concat({ role: "user", content: query }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    messages: [...historyMessages, { role: "user", content: userContent }] as any,
   });
   const block = message.content.find((entry) => entry.type === "text");
   return block?.type === "text" ? block.text : "I couldn't process that.";
@@ -161,10 +181,17 @@ async function askCodexCLI(query: string, systemPrompt = SYSTEM_PROMPT): Promise
   return invoke<string>("ask_via_cli", { cli: "codex", prompt: buildCliPrompt(systemPrompt, query) });
 }
 
-async function askProvider(query: string, config: ProviderConfig, systemPrompt = SYSTEM_PROMPT): Promise<string> {
+type ImageAttachment = { mimeType: string; dataUrl: string };
+
+async function askProvider(
+  query: string,
+  config: ProviderConfig,
+  systemPrompt = SYSTEM_PROMPT,
+  images?: ImageAttachment[],
+): Promise<string> {
   switch (config.provider) {
     case "anthropic":
-      return askAnthropic(query, config.apiKey, systemPrompt);
+      return askAnthropic(query, config.apiKey, systemPrompt, images);
     case "openai":
       return askOpenAI(query, config.apiKey, systemPrompt);
     case "ollama":
@@ -326,8 +353,17 @@ function parsePlannerResponse(raw: string): CommandResult | null {
   }
 }
 
-export async function routeViaAI(query: string, config: ProviderConfig): Promise<CommandResult> {
+export async function routeViaAI(
+  query: string,
+  config: ProviderConfig,
+  images?: ImageAttachment[],
+): Promise<CommandResult> {
   const plannedQuery = decorateQueryWithMemory(query);
+  // If images present, skip planner (vision queries are conversational, not action plans)
+  if (images && images.length > 0) {
+    const reply = await askProvider(plannedQuery, config, SYSTEM_PROMPT, images);
+    return { type: "os_action", message: reply };
+  }
   const rawPlan = await askProvider(plannedQuery, config, ACTION_PLANNER_SYSTEM);
   const planned = parsePlannerResponse(rawPlan);
 

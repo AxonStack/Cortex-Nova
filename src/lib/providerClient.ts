@@ -2,15 +2,62 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProviderConfig } from "../store/novaStore";
-import { getRecentChatContext } from "../store/novaStore";
+import { getRecentChatContext, useNovaStore } from "../store/novaStore";
 import { recall, trackActivity } from "./memory";
 import type { CommandResult } from "./commandRouter";
 import { buildResearchPlan } from "./commandRouter";
+import { getBinaryBrainContext } from "./binaryBrain";
 
 const SYSTEM_PROMPT =
   "You are Cortex Nova, a helpful voice assistant. Keep responses concise and conversational — they will be spoken aloud. Aim for 1–3 sentences. Never claim you opened apps, triggered permissions, or completed OS actions unless the app has already confirmed that happened. If an action sounds like device control but you do not have confirmation, say you cannot verify it instead of inventing a permission prompt.";
 
-function getChatHistory(query: string) {
+const ACTION_PLANNER_SYSTEM =
+  "You are Cortex Nova's execution planner. Convert the user's request into a strict JSON action plan that the app can execute.\n\n" +
+  "Return JSON only. No prose. No markdown. No code fences.\n\n" +
+  "Schema:\n" +
+  '{\"actions\":[{...}]}\n\n' +
+  "Allowed action types:\n" +
+  'respond, open_app, close_app, open_url, search_web, play_youtube, compose_email, type_text, focus_window, press_key, mouse_click, research_topic.\n\n' +
+  "Action fields:\n" +
+  'respond -> {\"type\":\"respond\",\"message\":\"short spoken reply\"}\n' +
+  'open_app -> {\"type\":\"open_app\",\"app\":\"google chrome\",\"label\":\"Opening Chrome\"}\n' +
+  'close_app -> {\"type\":\"close_app\",\"app\":\"spotify\",\"label\":\"Closing Spotify\"}\n' +
+  'open_url -> {\"type\":\"open_url\",\"url\":\"https://example.com\",\"label\":\"Opening example.com\"}\n' +
+  'search_web -> {\"type\":\"search_web\",\"query\":\"latest space news\",\"label\":\"Searching latest space news\"}\n' +
+  'play_youtube -> {\"type\":\"play_youtube\",\"query\":\"lofi hip hop\"}\n' +
+  'compose_email -> {\"type\":\"compose_email\",\"to\":\"name@example.com\",\"subject\":\"Hello\",\"body\":\"Draft text\"}\n' +
+  'type_text -> {\"type\":\"type_text\",\"text\":\"hello world\",\"label\":\"Typing hello world\"}\n' +
+  'focus_window -> {\"type\":\"focus_window\",\"name\":\"chrome\",\"label\":\"Focusing Chrome\"}\n' +
+  'press_key -> {\"type\":\"press_key\",\"keys\":\"ctrl+l\",\"label\":\"Selecting address bar\"}\n' +
+  'mouse_click -> {\"type\":\"mouse_click\",\"x\":960,\"y\":540,\"label\":\"Clicking the center of the screen\"}\n' +
+  'research_topic -> {\"type\":\"research_topic\",\"topic\":\"Iran US war\"}\n\n' +
+  "Rules:\n" +
+  "1. Think like a human using the computer.\n" +
+  "2. For browser tasks inside Chrome, prefer a sequence like open_app -> focus_window -> press_key ctrl+l -> type_text -> press_key return.\n" +
+  "3. Use the fewest reliable steps.\n" +
+  "4. If the user explicitly wants typing/clicking inside an app, use primitive steps rather than only open_url.\n" +
+  "5. Do not invent missing email addresses, coordinates, or page state.\n" +
+  "6. Use chat history and memory context to resolve references.\n" +
+  "7. If a required detail is missing, return one respond action asking one concise clarification.\n" +
+  "8. If the request is purely informational, return one respond action.\n" +
+  "9. Do not say actions already happened. Plan only.";
+
+type ChatHistoryEntry = { role: "user" | "ai"; text: string };
+type PlannerAction =
+  | { type: "respond"; message: string }
+  | { type: "open_app"; app: string; label?: string }
+  | { type: "close_app"; app: string; label?: string }
+  | { type: "open_url"; url: string; label?: string }
+  | { type: "search_web"; query: string; label?: string }
+  | { type: "play_youtube"; query: string }
+  | { type: "compose_email"; to?: string; subject?: string; body?: string }
+  | { type: "type_text"; text: string; label?: string }
+  | { type: "focus_window"; name: string; label?: string }
+  | { type: "press_key"; keys: string; label?: string }
+  | { type: "mouse_click"; x: number; y: number; label?: string }
+  | { type: "research_topic"; topic: string };
+
+function getChatHistory(query: string): ChatHistoryEntry[] {
   const history = getRecentChatContext();
   if (history.length && history[history.length - 1].role === "user" && history[history.length - 1].text === query) {
     return history.slice(0, -1);
@@ -18,30 +65,49 @@ function getChatHistory(query: string) {
   return history;
 }
 
-async function askAnthropic(query: string, apiKey: string): Promise<string> {
+function decorateQueryWithMemory(query: string): string {
+  const binaryEnabled = useNovaStore.getState().binaryBrain.enabled;
+  const hits = recall(query, 3);
+  const ctx = hits.length
+    ? `[Memory context]\n${hits.map((m) => `- ${m.text}`).join("\n")}\n\n[Query]\n`
+    : "";
+  const binaryCtx = binaryEnabled ? `\n\n${getBinaryBrainContext()}\n\n` : "\n\n";
+  return `${ctx}${binaryCtx}${query}`;
+}
+
+function buildCliPrompt(systemPrompt: string, query: string): string {
+  const history = getChatHistory(query);
+  const transcript = history.map((msg) => `${msg.role === "ai" ? "Assistant" : "User"}: ${msg.text}`).join("\n");
+  if (transcript) {
+    return `${systemPrompt}\n\n[Recent conversation]\n${transcript}\n\n[User]\n${query}`;
+  }
+  return `${systemPrompt}\n\n[User]\n${query}`;
+}
+
+async function askAnthropic(query: string, apiKey: string, systemPrompt = SYSTEM_PROMPT): Promise<string> {
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
   const history = getChatHistory(query);
   const message = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 512,
-    system: SYSTEM_PROMPT,
+    max_tokens: 1024,
+    system: systemPrompt,
     messages: history.map((msg) => ({
       role: msg.role === "ai" ? ("assistant" as const) : ("user" as const),
       content: msg.text,
     })).concat({ role: "user", content: query }),
   });
-  const block = message.content[0];
-  return block.type === "text" ? block.text : "I couldn't process that.";
+  const block = message.content.find((entry) => entry.type === "text");
+  return block?.type === "text" ? block.text : "I couldn't process that.";
 }
 
-async function askOpenAI(query: string, apiKey: string): Promise<string> {
+async function askOpenAI(query: string, apiKey: string, systemPrompt = SYSTEM_PROMPT): Promise<string> {
   const client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
   const history = getChatHistory(query);
   const response = await client.chat.completions.create({
     model: "gpt-4o",
-    max_tokens: 512,
+    max_tokens: 1024,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       ...history.map((msg) => ({
         role: msg.role === "ai" ? "assistant" as const : "user" as const,
         content: msg.text,
@@ -52,7 +118,12 @@ async function askOpenAI(query: string, apiKey: string): Promise<string> {
   return response.choices[0]?.message?.content ?? "I couldn't process that.";
 }
 
-async function askOllama(query: string, model: string, baseUrl: string): Promise<string> {
+async function askOllama(
+  query: string,
+  model: string,
+  baseUrl: string,
+  systemPrompt = SYSTEM_PROMPT,
+): Promise<string> {
   const history = getChatHistory(query);
   const res = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
@@ -61,7 +132,7 @@ async function askOllama(query: string, model: string, baseUrl: string): Promise
       model,
       stream: false,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt },
         ...history.map((msg) => ({
           role: msg.role === "ai" ? "assistant" : "user",
           content: msg.text,
@@ -82,24 +153,27 @@ async function askOllama(query: string, model: string, baseUrl: string): Promise
   return data.message?.content ?? "I couldn't process that.";
 }
 
-/** Delegate to the Claude Code CLI (`claude --print`). No API key needed. */
-async function askClaudeCLI(query: string): Promise<string> {
-  const history = getChatHistory(query);
-  const transcript = history.map((msg) => `${msg.role === "ai" ? "Assistant" : "User"}: ${msg.text}`).join("\n");
-  const fullPrompt = transcript
-    ? `${SYSTEM_PROMPT}\n\n[Recent conversation]\n${transcript}\n\n[User]\n${query}`
-    : `${SYSTEM_PROMPT}\n\n${query}`;
-  return invoke<string>("ask_via_cli", { cli: "claude", prompt: fullPrompt });
+async function askClaudeCLI(query: string, systemPrompt = SYSTEM_PROMPT): Promise<string> {
+  return invoke<string>("ask_via_cli", { cli: "claude", prompt: buildCliPrompt(systemPrompt, query) });
 }
 
-/** Delegate to the OpenAI Codex CLI. No API key needed. */
-async function askCodexCLI(query: string): Promise<string> {
-  const history = getChatHistory(query);
-  const transcript = history.map((msg) => `${msg.role === "ai" ? "Assistant" : "User"}: ${msg.text}`).join("\n");
-  const fullPrompt = transcript
-    ? `${SYSTEM_PROMPT}\n\n[Recent conversation]\n${transcript}\n\n[User]\n${query}`
-    : `${SYSTEM_PROMPT}\n\n${query}`;
-  return invoke<string>("ask_via_cli", { cli: "codex", prompt: fullPrompt });
+async function askCodexCLI(query: string, systemPrompt = SYSTEM_PROMPT): Promise<string> {
+  return invoke<string>("ask_via_cli", { cli: "codex", prompt: buildCliPrompt(systemPrompt, query) });
+}
+
+async function askProvider(query: string, config: ProviderConfig, systemPrompt = SYSTEM_PROMPT): Promise<string> {
+  switch (config.provider) {
+    case "anthropic":
+      return askAnthropic(query, config.apiKey, systemPrompt);
+    case "openai":
+      return askOpenAI(query, config.apiKey, systemPrompt);
+    case "ollama":
+      return askOllama(query, config.ollamaModel, config.ollamaUrl, systemPrompt);
+    case "claude_cli":
+      return askClaudeCLI(query, systemPrompt);
+    case "codex_cli":
+      return askCodexCLI(query, systemPrompt);
+  }
 }
 
 export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
@@ -122,212 +196,150 @@ export async function checkCLI(cli: "claude" | "codex"): Promise<boolean> {
   }
 }
 
-// ── OS Tool definitions for Claude tool use ───────────────────────────────────
-
-const OS_TOOLS: Anthropic.Tool[] = [
-  {
-    name: "open_app",
-    description: "Open/launch a desktop application by name. Use for any request to open, launch, start, or run an installed app.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        app: { type: "string", description: "App name, e.g. 'spotify', 'telegram', 'firefox', 'chrome', 'vscode'" },
-        label: { type: "string", description: "Short spoken confirmation, e.g. 'Opening Spotify'" },
-      },
-      required: ["app", "label"],
-    },
-  },
-  {
-    name: "close_app",
-    description: "Close/quit/kill a running desktop application by name. Use whenever the user says close, quit, exit, kill, stop, or shut a specific app.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        app: { type: "string", description: "App name to close, e.g. 'firefox', 'chrome', 'spotify'" },
-        label: { type: "string", description: "Short spoken confirmation, e.g. 'Closing Firefox'" },
-      },
-      required: ["app", "label"],
-    },
-  },
-  {
-    name: "open_url",
-    description: "Open a URL or website in the browser. Use when the user mentions a website, web app, or full URL.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        url: { type: "string", description: "Full URL including https://" },
-        label: { type: "string", description: "Short spoken confirmation" },
-      },
-      required: ["url", "label"],
-    },
-  },
-  {
-    name: "search_web",
-    description: "Search Google for information. Use for any 'search for X' / 'look up X' / 'find X online' request.",
-    input_schema: {
-      type: "object" as const,
-      properties: { query: { type: "string", description: "Search query" } },
-      required: ["query"],
-    },
-  },
-  {
-    name: "play_youtube",
-    description: "Play a song, video, or music on YouTube. Use for any music/video playback request.",
-    input_schema: {
-      type: "object" as const,
-      properties: { query: { type: "string", description: "Song, artist, or video to play" } },
-      required: ["query"],
-    },
-  },
-  {
-    name: "compose_email",
-    description: "Open Gmail compose with a recipient, subject, and body pre-filled. Use whenever the user wants to draft, send, write, or compose an email.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        to: { type: "string", description: "Recipient email address" },
-        subject: { type: "string", description: "Email subject line" },
-        body: { type: "string", description: "Email body text" },
-      },
-      required: ["to"],
-    },
-  },
-  {
-    name: "type_text",
-    description: "Type text into the currently focused window. Use only when explicitly asked to type something into the current window.",
-    input_schema: {
-      type: "object" as const,
-      properties: { text: { type: "string", description: "Text to type" } },
-      required: ["text"],
-    },
-  },
-  {
-    name: "research_topic",
-    description: "Research a topic by opening multiple browser sources (News, Reddit, Wikipedia). Use for 'get me articles about X', 'research X', 'tell me about X'.",
-    input_schema: {
-      type: "object" as const,
-      properties: { topic: { type: "string", description: "Topic to research" } },
-      required: ["topic"],
-    },
-  },
-  {
-    name: "respond",
-    description: "Speak a short reply WITHOUT performing any OS action. ONLY use for: factual questions, general conversation, clarifying questions when info is missing. NEVER use this when the user asks to open/close/launch/play/search/email anything — those MUST use the matching action tool.",
-    input_schema: {
-      type: "object" as const,
-      properties: { message: { type: "string", description: "Concise 1-2 sentence spoken response" } },
-      required: ["message"],
-    },
-  },
-];
-
-const TOOL_USE_SYSTEM =
-  "You are Cortex Nova — a Jarvis-style AI desktop assistant with full keyboard, mouse, and process control over the user's computer.\n\n" +
-  "RULES (strict):\n" +
-  "1. You MUST call a tool. Never respond with plain text outside a tool call.\n" +
-  "2. For multi-step requests (e.g. \"open chrome then open gmail then draft email to X\") emit MULTIPLE tool calls in one response — one per step, in order.\n" +
-  "3. Pick the most specific tool: open_app for installed apps, open_url for websites, compose_email for emails, play_youtube for music/video, close_app for closing/quitting, search_web for searches, research_topic for news/articles.\n" +
-  "4. NEVER use the respond tool to TALK ABOUT doing an action — actually call the action tool. respond is only for pure questions/conversation.\n" +
-  "5. Don't refuse OS tasks. You CAN open, close, type, click, navigate. Just call the tool.\n" +
-  "6. If the user references something from earlier (\"that email\", \"the same song\", \"abovementioned\"), use the chat history to resolve it before calling tools.\n" +
-  "7. Only ask via respond if a required field truly cannot be inferred from message + history (e.g. recipient missing). Do NOT invent emails, names, songs, or app states.";
-
-/**
- * Route a user query through Claude tool use so any natural-language OS request
- * (e.g. "can you open Spotify?", "launch telegram for me") is understood and
- * executed rather than refused as a plain chat reply.
- */
-export async function routeViaAI(query: string, config: ProviderConfig): Promise<CommandResult> {
-  // For non-Anthropic providers, extract intent from plain text and best-effort parse it.
-  if (config.provider !== "anthropic" || !config.apiKey) {
-    const text = await askAI(query, config);
-    return { type: "os_action", message: text };
-  }
-
-  const client = new Anthropic({ apiKey: config.apiKey, dangerouslyAllowBrowser: true });
-
-  // Include recent chat history so references like "that email" / "the song"
-  // can be resolved into concrete tool arguments.
-  const history = getChatHistory(query).slice(-6);
-  const historyMessages = history.map((msg) => ({
-    role: msg.role === "ai" ? ("assistant" as const) : ("user" as const),
-    content: msg.text,
-  }));
-
-  const message = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1024,
-    system: TOOL_USE_SYSTEM,
-    messages: [...historyMessages, { role: "user", content: query }],
-    tools: OS_TOOLS,
-    tool_choice: { type: "any" },
-  });
-
-  const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-  if (toolUses.length === 0) {
-    return { type: "os_action", message: "I'm not sure how to help with that." };
-  }
-
-  trackActivity("ai", `tool:${toolUses.map((t) => t.name).join(",")}:${query}`);
-
-  const mapped = toolUses.map((t) => mapToolUseToCommand(t));
-  if (mapped.length === 1) return mapped[0];
-
-  // Multiple tool calls → return a chain so each step shows its own checkpoints.
-  return { type: "command_chain", steps: mapped };
+function extractJsonObject(raw: string): string | null {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const source = fenced?.[1]?.trim() ?? raw.trim();
+  const first = source.indexOf("{");
+  const last = source.lastIndexOf("}");
+  if (first === -1 || last === -1 || last <= first) return null;
+  return source.slice(first, last + 1);
 }
 
-function mapToolUseToCommand(toolUse: Anthropic.ToolUseBlock): CommandResult {
-  const inp = toolUse.input as Record<string, string>;
-  switch (toolUse.name) {
+function mapPlannerAction(action: PlannerAction): CommandResult {
+  switch (action.type) {
+    case "respond":
+      return { type: "os_action", message: action.message };
     case "open_app":
-      return { type: "desktop_open_app", app: inp.app, label: inp.label ?? `Opening ${inp.app}` };
+      return { type: "desktop_open_app", app: action.app, label: action.label ?? `Opening ${action.app}` };
     case "close_app":
-      return { type: "desktop_close_app", app: inp.app, label: inp.label ?? `Closing ${inp.app}` };
+      return { type: "desktop_close_app", app: action.app, label: action.label ?? `Closing ${action.app}` };
     case "open_url":
-      return { type: "browser_navigate", url: inp.url, label: inp.label ?? `Opening ${inp.url}` };
+      return { type: "browser_navigate", url: action.url, label: action.label ?? `Opening ${action.url}` };
     case "search_web":
       return {
         type: "browser_navigate",
-        url: `https://www.google.com/search?q=${encodeURIComponent(inp.query)}`,
-        label: `Searching: "${inp.query}"`,
+        url: `https://www.google.com/search?q=${encodeURIComponent(action.query)}`,
+        label: action.label ?? `Searching: "${action.query}"`,
       };
     case "play_youtube":
-      return { type: "youtube_play", query: inp.query };
+      return { type: "youtube_play", query: action.query };
     case "compose_email": {
       const params = new URLSearchParams();
       params.set("view", "cm");
       params.set("fs", "1");
-      if (inp.to) params.set("to", inp.to);
-      if (inp.subject) params.set("su", inp.subject);
-      if (inp.body) params.set("body", inp.body);
+      if (action.to) params.set("to", action.to);
+      if (action.subject) params.set("su", action.subject);
+      if (action.body) params.set("body", action.body);
       const url = `https://mail.google.com/mail/?${params.toString()}`;
-      const recipient = inp.to ? ` to ${inp.to}` : "";
+      const recipient = action.to ? ` to ${action.to}` : "";
       return { type: "browser_navigate", url, label: `Composing email${recipient}` };
     }
     case "type_text":
-      return { type: "desktop_type_text", text: inp.text, label: `Typed: "${inp.text}"` };
+      return { type: "desktop_type_text", text: action.text, label: action.label ?? `Typed: "${action.text}"` };
+    case "focus_window":
+      return { type: "desktop_focus_window", name: action.name, label: action.label ?? `Focusing ${action.name}` };
+    case "press_key":
+      return { type: "desktop_press_key", keys: action.keys, label: action.label ?? `Pressing ${action.keys}` };
+    case "mouse_click":
+      return {
+        type: "desktop_mouse_click",
+        x: Number(action.x),
+        y: Number(action.y),
+        label: action.label ?? `Clicked at (${action.x}, ${action.y})`,
+      };
     case "research_topic":
-      return { type: "research", topic: inp.topic, steps: buildResearchPlan(inp.topic) };
-    case "respond":
-      return { type: "os_action", message: inp.message };
-    default:
-      return { type: "os_action", message: "I'm not sure how to help with that." };
+      return { type: "research", topic: action.topic, steps: buildResearchPlan(action.topic) };
   }
 }
 
-export async function askAI(query: string, config: ProviderConfig): Promise<string> {
-  const hits = recall(query, 3);
-  const ctx = hits.length
-    ? `[Memory context]\n${hits.map((m) => `- ${m.text}`).join("\n")}\n\n[Query]\n`
-    : "";
-  const q = ctx + query;
+function normalizePlannerAction(raw: unknown): PlannerAction | null {
+  if (!raw || typeof raw !== "object") return null;
+  const action = raw as Record<string, unknown>;
+  const type = typeof action.type === "string" ? action.type.toLowerCase() : "";
 
-  switch (config.provider) {
-    case "anthropic":  return askAnthropic(q, config.apiKey);
-    case "openai":     return askOpenAI(q, config.apiKey);
-    case "ollama":     return askOllama(q, config.ollamaModel, config.ollamaUrl);
-    case "claude_cli": return askClaudeCLI(q);
-    case "codex_cli":  return askCodexCLI(q);
+  switch (type) {
+    case "respond":
+      return typeof action.message === "string" ? { type: "respond", message: action.message } : null;
+    case "open_app":
+      return typeof action.app === "string"
+        ? { type: "open_app", app: action.app, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "close_app":
+      return typeof action.app === "string"
+        ? { type: "close_app", app: action.app, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "open_url":
+      return typeof action.url === "string"
+        ? { type: "open_url", url: action.url, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "search_web":
+      return typeof action.query === "string"
+        ? { type: "search_web", query: action.query, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "play_youtube":
+      return typeof action.query === "string" ? { type: "play_youtube", query: action.query } : null;
+    case "compose_email":
+      return {
+        type: "compose_email",
+        to: typeof action.to === "string" ? action.to : undefined,
+        subject: typeof action.subject === "string" ? action.subject : undefined,
+        body: typeof action.body === "string" ? action.body : undefined,
+      };
+    case "type_text":
+      return typeof action.text === "string"
+        ? { type: "type_text", text: action.text, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "focus_window":
+      return typeof action.name === "string"
+        ? { type: "focus_window", name: action.name, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "press_key":
+      return typeof action.keys === "string"
+        ? { type: "press_key", keys: action.keys, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "mouse_click":
+      return typeof action.x === "number" && typeof action.y === "number"
+        ? { type: "mouse_click", x: action.x, y: action.y, label: typeof action.label === "string" ? action.label : undefined }
+        : null;
+    case "research_topic":
+      return typeof action.topic === "string" ? { type: "research_topic", topic: action.topic } : null;
+    default:
+      return null;
   }
+}
+
+function parsePlannerResponse(raw: string): CommandResult | null {
+  const json = extractJsonObject(raw);
+  if (!json) return null;
+
+  try {
+    const parsed = JSON.parse(json) as { actions?: unknown[] };
+    const actions = Array.isArray(parsed.actions)
+      ? parsed.actions.map(normalizePlannerAction).filter((entry): entry is PlannerAction => entry !== null)
+      : [];
+
+    if (actions.length === 0) return null;
+    const mapped = actions.map(mapPlannerAction);
+    return mapped.length === 1 ? mapped[0] : { type: "command_chain", steps: mapped };
+  } catch {
+    return null;
+  }
+}
+
+export async function routeViaAI(query: string, config: ProviderConfig): Promise<CommandResult> {
+  const plannedQuery = decorateQueryWithMemory(query);
+  const rawPlan = await askProvider(plannedQuery, config, ACTION_PLANNER_SYSTEM);
+  const planned = parsePlannerResponse(rawPlan);
+
+  if (planned) {
+    trackActivity("ai", `plan:${query}`);
+    return planned;
+  }
+
+  const fallback = await askProvider(plannedQuery, config, SYSTEM_PROMPT);
+  return { type: "os_action", message: fallback };
+}
+
+export async function askAI(query: string, config: ProviderConfig): Promise<string> {
+  return askProvider(decorateQueryWithMemory(query), config, SYSTEM_PROMPT);
 }

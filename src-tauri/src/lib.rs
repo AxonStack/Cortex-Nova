@@ -12,6 +12,9 @@ struct OAuthServer(Mutex<Option<TcpListener>>);
 /// Holds the live arecord child process so we can kill it on stop.
 struct RecordingState(Mutex<Option<std::process::Child>>);
 
+/// Caches discovered Linux desktop launcher IDs to improve app-open reliability.
+struct AppDiscoveryCache(Mutex<(Instant, Vec<String>)>);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn extended_path() -> String {
@@ -276,8 +279,7 @@ fn flatpak_app_installed(app_id: &str) -> bool {
 /// Search installed .desktop files for an app matching `name` and launch via gtk-launch.
 /// Covers apps installed as Flatpak, Snap, or system packages that don't have a plain binary.
 #[cfg(target_os = "linux")]
-fn try_desktop_launch(name: &str) -> bool {
-    let needle = name.to_lowercase().replace([' ', '-', '_', '.'], "");
+fn collect_desktop_app_ids() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let dirs = [
         "/usr/share/applications".to_string(),
@@ -286,23 +288,43 @@ fn try_desktop_launch(name: &str) -> bool {
         format!("{home}/.local/share/flatpak/exports/share/applications"),
         "/var/lib/snapd/desktop/applications".to_string(),
     ];
+    let mut ids: Vec<String> = Vec::new();
     for dir in &dirs {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let fname = entry.file_name().to_string_lossy().to_lowercase();
-                if !fname.ends_with(".desktop") { continue; }
-                let base = fname.trim_end_matches(".desktop")
-                    .replace(['-', '_', '.'], "");
-                if base.contains(&needle) || needle.contains(&base) {
-                    let desktop_id = fname.trim_end_matches(".desktop").to_string();
-                    if std::process::Command::new("gtk-launch")
-                        .arg(&desktop_id)
-                        .spawn()
-                        .is_ok()
-                    {
-                        return true;
-                    }
+                if !fname.ends_with(".desktop") {
+                    continue;
                 }
+                let desktop_id = fname.trim_end_matches(".desktop").to_string();
+                if !ids.contains(&desktop_id) {
+                    ids.push(desktop_id);
+                }
+            }
+        }
+    }
+    ids
+}
+
+#[cfg(target_os = "linux")]
+fn try_desktop_launch(name: &str, cache: &tauri::State<AppDiscoveryCache>) -> bool {
+    let needle = name.to_lowercase().replace([' ', '-', '_', '.'], "");
+    let mut lock = cache.0.lock().unwrap();
+    if lock.1.is_empty() || lock.0.elapsed() > Duration::from_secs(90) {
+        *lock = (Instant::now(), collect_desktop_app_ids());
+    }
+    let ids = lock.1.clone();
+    drop(lock);
+
+    for desktop_id in ids {
+        let base = desktop_id.replace(['-', '_', '.'], "");
+        if base.contains(&needle) || needle.contains(&base) {
+            if std::process::Command::new("gtk-launch")
+                .arg(&desktop_id)
+                .spawn()
+                .is_ok()
+            {
+                return true;
             }
         }
     }
@@ -310,7 +332,7 @@ fn try_desktop_launch(name: &str) -> bool {
 }
 
 #[tauri::command]
-fn open_application(app: String) -> Result<(), String> {
+fn open_application(app: String, cache: tauri::State<AppDiscoveryCache>) -> Result<(), String> {
     let requested = app.trim();
     if requested.is_empty() {
         return Err("No application name provided.".into());
@@ -496,7 +518,7 @@ fn open_application(app: String) -> Result<(), String> {
 
         // Final fallback: search installed .desktop files and launch via gtk-launch.
         // Covers any app not in the known list above (Flatpak, AppImage, custom installs).
-        if try_desktop_launch(requested) {
+        if try_desktop_launch(requested, &cache) {
             return Ok(());
         }
 
@@ -917,6 +939,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(OAuthServer(Mutex::new(None)))
         .manage(RecordingState(Mutex::new(None)))
+        .manage(AppDiscoveryCache(Mutex::new((Instant::now(), Vec::new()))))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
             // Disable WebKit GPU hardware acceleration via the WebKit2GTK API.

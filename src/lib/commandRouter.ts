@@ -10,6 +10,8 @@ export type CommandResult =
   | { type: "desktop_open_app"; app: string; label: string }
   | { type: "desktop_close_app"; app: string; label: string }
   | { type: "browser_navigate"; url: string; label: string }
+  | { type: "desktop_focus_window"; name: string; label: string }
+  | { type: "desktop_press_key"; keys: string; label: string }
   | { type: "desktop_type_text"; text: string; label: string }
   | { type: "desktop_mouse_click"; x: number; y: number; label: string }
   | { type: "command_chain"; steps: CommandResult[] };
@@ -89,134 +91,6 @@ export async function openUrl(url: string): Promise<void> {
   }
 }
 
-// ── Site shorthand map ────────────────────────────────────────────────────────
-
-const SITE_MAP: Record<string, string> = {
-  // Only websites — apps go in APP_ALIASES above
-  youtube:    "https://www.youtube.com",
-  gmail:      "https://mail.google.com",
-  github:     "https://www.github.com",
-  twitter:    "https://www.twitter.com",
-  x:          "https://www.x.com",
-  reddit:     "https://www.reddit.com",
-  netflix:    "https://www.netflix.com",
-  google:     "https://www.google.com",
-  linkedin:   "https://www.linkedin.com",
-  instagram:  "https://www.instagram.com",
-  notion:     "https://www.notion.so",
-  chatgpt:    "https://chat.openai.com",
-  whatsapp:   "https://web.whatsapp.com",
-  wikipedia:  "https://www.wikipedia.org",
-  maps:       "https://maps.google.com",
-  "google maps": "https://maps.google.com",
-  drive:      "https://drive.google.com",
-  "google drive": "https://drive.google.com",
-  docs:       "https://docs.google.com",
-  sheets:     "https://sheets.google.com",
-  meet:       "https://meet.google.com",
-};
-
-const APP_ALIASES: Record<string, string> = {
-  // browsers
-  browser:        "google chrome",
-  chrome:         "google chrome",
-  "google chrome":"google chrome",
-  chromium:       "chromium",
-  firefox:        "firefox",
-  "firefox browser": "firefox",
-  brave:          "brave-browser",
-  "brave browser":"brave-browser",
-  edge:           "microsoft-edge",
-  opera:          "opera",
-  // media
-  spotify:        "spotify",
-  vlc:            "vlc",
-  mpv:            "mpv",
-  "media player": "vlc",
-  rhythmbox:      "rhythmbox",
-  totem:          "totem",
-  // messaging
-  telegram:           "telegram",
-  "telegram app":     "telegram",
-  "telegram desktop": "telegram",
-  discord:            "discord",
-  slack:              "slack",
-  signal:             "signal-desktop",
-  whatsapp:           "whatsapp-for-linux",
-  zoom:               "zoom",
-  skype:              "skype",
-  teams:              "teams",
-  "microsoft teams":  "teams",
-  // editors / IDEs
-  vscode:             "code",
-  "vs code":          "code",
-  "visual studio code": "code",
-  code:               "code",
-  vim:                "vim",
-  gedit:              "gedit",
-  "text editor":      "gedit",
-  kate:               "kate",
-  nano:               "nano",
-  // system tools
-  calculator:         "calculator",
-  calc:               "calculator",
-  terminal:           "terminal",
-  "file manager":     "files",
-  files:              "files",
-  nautilus:           "nautilus",
-  dolphin:            "dolphin",
-  thunar:             "thunar",
-  "system monitor":   "gnome-system-monitor",
-  monitor:            "gnome-system-monitor",
-  settings:           "gnome-control-center",
-  // creative
-  gimp:               "gimp",
-  inkscape:           "inkscape",
-  blender:            "blender",
-  kdenlive:           "kdenlive",
-  audacity:           "audacity",
-  obs:                "obs",
-  "obs studio":       "obs",
-  // office
-  libreoffice:        "libreoffice",
-  "libre office":     "libreoffice",
-  writer:             "libreoffice --writer",
-  calc2:              "libreoffice --calc",
-  impress:            "libreoffice --impress",
-  // games
-  steam:              "steam",
-  // other
-  postman:            "postman",
-  insomnia:           "insomnia",
-  dbeaver:            "dbeaver",
-};
-
-async function openTarget(target: string): Promise<CommandResult> {
-  const trimmed = target.trim();
-  const lower = trimmed.toLowerCase();
-  const appName = APP_ALIASES[lower] ?? trimmed;
-
-  if (APP_ALIASES[lower]) {
-    return { type: "desktop_open_app", app: appName, label: `Opening app: ${trimmed}` };
-  }
-
-  const siteUrl = SITE_MAP[lower];
-  if (siteUrl) {
-    return { type: "browser_navigate", url: siteUrl, label: `Opening ${trimmed}` };
-  }
-
-  if (/^https?:\/\//i.test(trimmed)) {
-    return { type: "browser_navigate", url: trimmed, label: `Opening ${trimmed}` };
-  }
-
-  if (/^[a-z0-9.-]+\.[a-z]{2,}(?:\/.*)?$/i.test(trimmed)) {
-    const url = `https://${trimmed}`;
-    return { type: "browser_navigate", url, label: `Opening ${trimmed}` };
-  }
-
-  return { type: "desktop_open_app", app: appName, label: `Opening app: ${trimmed}` };
-}
-
 // ── Research plan builder ─────────────────────────────────────────────────────
 
 export function buildResearchPlan(topic: string): ResearchStep[] {
@@ -264,6 +138,27 @@ const OS_PATTERNS: Array<{
   pattern: RegExp;
   handler: (match: RegExpMatchArray) => Promise<CommandResult>;
 }> = [
+  {
+    pattern: /^open\s+(?:google\s+)?chrome(?:\s+then|\s+and)?\s+search\s+(?:for\s+)?(.+)/i,
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
+  },
+  {
+    pattern: /^search\s+(?:for\s+)?(.+?)\s+in\s+(?:google\s+)?chrome$/i,
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
+  },
+  {
+    pattern: /^open\s+(?:google\s+)?chrome(?:\s+then|\s+and)?\s+(?:go to|navigate to|open)\s+(.+)/i,
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
+  },
+  {
+    pattern: /^(?:go to|navigate to|open)\s+(.+?)\s+in\s+(?:google\s+)?chrome$/i,
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
+  },
+  {
+    pattern: /^open\s+(?:google\s+)?chrome(?:\s+then|\s+and)?\s+type\s+(.+)/i,
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
+  },
+
   // ── Chained browser intent: open Chrome/browser → YouTube → play query ──
   // Handles all natural orderings: "search youtube for", "search for youtube",
   // "and play a song named X", "and play a song called X", etc.
@@ -420,11 +315,7 @@ const OS_PATTERNS: Array<{
   // ── Media: play on spotify ──────────────────────────────────────────────
   {
     pattern: /^play (.+?) on spotify/i,
-    handler: async (match) => ({
-      type: "browser_navigate",
-      url: `https://open.spotify.com/search/${encodeURIComponent(match[1])}`,
-      label: `Opening "${match[1]}" on Spotify`,
-    }),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 
   // ── Media: "play a song named/called X" — extract just the title ────────
@@ -448,66 +339,47 @@ const OS_PATTERNS: Array<{
   // ── Email: compose with body ─────────────────────────────────────────────
   {
     pattern: /^email (.+?) (?:about|re|regarding) (.+?) (?:saying|with body|that) (.+)/i,
-    handler: async (match) => {
-      const [, , subject, body] = match;
-      return {
-        type: "browser_navigate",
-        url: `https://mail.google.com/mail/?view=cm&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
-        label: `Composing email: "${subject}"`,
-      };
-    },
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 
   // ── Email: compose without body ─────────────────────────────────────────
   {
     pattern: /^email (.+?) (?:about|re|regarding) (.+)/i,
-    handler: async (match) => ({
-      type: "browser_navigate",
-      url: `https://mail.google.com/mail/?view=cm&su=${encodeURIComponent(match[2])}`,
-      label: `Composing email about "${match[2]}"`,
-    }),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 
   // ── Navigation: open X and go to Y ──────────────────────────────────────
   {
     pattern: /^open (.+?) and (?:go to|navigate to) (.+)/i,
-    handler: async (match) => ({
-      type: "browser_navigate",
-      url: match[2].startsWith("http") ? match[2] : `https://${match[2]}`,
-      label: `Opening ${match[2]}`,
-    }),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 
   // ── Search: general ─────────────────────────────────────────────────────
   {
     pattern: /^search (?:for )?(.+)/i,
-    handler: async (match) => ({
-      type: "browser_navigate",
-      url: `https://www.google.com/search?q=${encodeURIComponent(match[1])}`,
-      label: `Searching: "${match[1]}"`,
-    }),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 
   // ── Navigation: go to URL ───────────────────────────────────────────────
   {
     pattern: /^(?:go to|navigate to|open) (https?:\/\/.+)/i,
-    handler: async (match) => ({ type: "browser_navigate", url: match[1], label: `Opening ${match[1]}` }),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 
   // ── Navigation: go to [site name] ───────────────────────────────────────
   {
     pattern: /^go to (.+)/i,
-    handler: async (match) => openTarget(match[1]),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 
   // ── Open [site name] ────────────────────────────────────────────────────
   {
     pattern: /^open (.+)/i,
-    handler: async (match) => openTarget(match[1]),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
   {
     pattern: /^(?:launch|start|run) (.+)/i,
-    handler: async (match) => openTarget(match[1]),
+    handler: async (match) => ({ type: "ai_query", query: match[0].trim() }),
   },
 ];
 

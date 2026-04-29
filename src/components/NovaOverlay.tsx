@@ -8,6 +8,8 @@ import {
   type Memory, type TempEntry, type BehaviorPattern,
 } from "../lib/memory";
 import type { ActionLogEntry } from "../store/novaStore";
+import { TaskPlanPanel } from "./TaskPlanPanel";
+import { getBinaryBrainStats, exportBinaryBrain, importBinaryBrain, resetBinaryBrain } from "../lib/binaryBrain";
 
 interface NovaChatInterfaceProps {
   isHoldingSpace: boolean;
@@ -72,7 +74,7 @@ export function NovaChatInterface({
   const {
     status, transcript, messages, errorMessage,
     providerConfig, theme, toggleTheme,
-    actionLog, sessionStart, activePlan,
+    actionLog, sessionStart, activePlan, permissions, setPermission, binaryBrain, setBinaryBrainEnabled,
   } = useNovaStore();
 
   const isWaveformActive = status === "listening" || status === "speaking";
@@ -89,6 +91,7 @@ export function NovaChatInterface({
 
   // Active memory tab
   const [memTab, setMemTab] = useState<"universal" | "session" | "learned">("session");
+  const [sidebarTab, setSidebarTab] = useState<"memory" | "permissions" | "brain">("memory");
 
   const uptime = useUptime(sessionStart);
 
@@ -160,11 +163,45 @@ export function NovaChatInterface({
   const entryTypeIcon: Record<TempEntry["type"], string> = {
     search: "⌕", open: "↗", command: "⌘", research: "◎", ai: "✦",
   };
+  const brainStats = getBinaryBrainStats();
+
+  function handleExportBrain() {
+    const payload = exportBinaryBrain();
+    navigator.clipboard?.writeText(payload).catch(() => {});
+    window.alert("Binary brain exported. It has been copied to clipboard.");
+  }
+
+  function handleImportBrain() {
+    const encoded = window.prompt("Paste binary brain payload:");
+    if (!encoded) return;
+    const ok = importBinaryBrain(encoded);
+    window.alert(ok ? "Binary brain imported." : "Import failed. Invalid payload.");
+    if (ok) setInputText((v) => v);
+  }
+
+  function handleResetBrain() {
+    const ok = window.confirm("Reset local binary brain training data?");
+    if (!ok) return;
+    resetBinaryBrain();
+    window.alert("Binary brain reset.");
+    setInputText((v) => v);
+  }
 
   return (
     <div className="h-screen bg-[#d8d8d8] dark:bg-[#0f0f0f] p-4 sm:p-6 font-mono flex flex-col transition-colors duration-200 overflow-hidden">
       <div className="flex-1 w-full rounded-[28px] border-2 border-black dark:border-[#3a3a3a] bg-[#dfdfdf] dark:bg-[#171717] shadow-[0_10px_0_#000] dark:shadow-[0_10px_0_#2a2a2a] p-2 flex flex-col min-h-0">
         <div className="relative flex-1 rounded-[20px] border border-black dark:border-[#3a3a3a] bg-[#e8e8e8] dark:bg-[#1f1f1f] p-3 sm:p-4 flex flex-col gap-3 min-h-0">
+          {activePlan && (
+            <div className="pointer-events-none absolute right-3 top-3 z-20 w-[min(360px,calc(100%-1.5rem))]">
+              <div className="pointer-events-auto">
+                <TaskPlanPanel
+                  activePlan={activePlan}
+                  compact
+                  emptyLabel="Nova shows live progress here while it controls your desktop."
+                />
+              </div>
+            </div>
+          )}
 
           {/* Header */}
           <div className="rounded-[16px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] px-4 py-3 flex items-center justify-between gap-3 shrink-0 flex-wrap gap-y-2">
@@ -365,17 +402,36 @@ export function NovaChatInterface({
               {/* Memory panel with tabs */}
               <div className="flex-1 flex flex-col min-h-0">
                 <div className="flex items-center justify-between mb-2 shrink-0">
-                  <h3 className="text-[11px] tracking-[0.32em] uppercase text-black/60 dark:text-white/45">Memory</h3>
+                  <div className="flex gap-1">
+                    {([
+                      { id: "memory", label: "MEMORY" },
+                      { id: "permissions", label: "PERMS" },
+                      { id: "brain", label: "BRAIN" },
+                    ] as const).map((tab) => (
+                      <button
+                        key={tab.id}
+                        onClick={() => setSidebarTab(tab.id)}
+                        className={`text-[9px] tracking-widest uppercase px-2 py-0.5 rounded border transition-colors ${
+                          sidebarTab === tab.id
+                            ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
+                            : "border-black/20 dark:border-white/20 text-black/40 dark:text-white/30 hover:border-black/50 dark:hover:border-white/50"
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
                   <div className="flex gap-1">
                     {(["session", "universal", "learned"] as const).map((tab) => (
                       <button
                         key={tab}
                         onClick={() => setMemTab(tab)}
+                        disabled={sidebarTab !== "memory"}
                         className={`text-[9px] tracking-widest uppercase px-2 py-0.5 rounded border transition-colors ${
                           memTab === tab
                             ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
                             : "border-black/20 dark:border-white/20 text-black/40 dark:text-white/30 hover:border-black/50 dark:hover:border-white/50"
-                        }`}
+                        } ${sidebarTab !== "memory" ? "opacity-30 cursor-not-allowed" : ""}`}
                       >
                         {tab === "session" ? "TEMP" : tab === "universal" ? "PERM" : "AUTO"}
                       </button>
@@ -384,9 +440,85 @@ export function NovaChatInterface({
                 </div>
 
                 <div className="overflow-y-auto flex-1 space-y-1.5 min-h-0">
+                  {sidebarTab === "permissions" && (
+                    <div className="space-y-2">
+                      {([
+                        { key: "desktopAutomation", label: "Desktop Automation", detail: "Master switch for OS control tasks" },
+                        { key: "appControl", label: "Open/Close Apps", detail: "Allow launching and closing apps" },
+                        { key: "browserControl", label: "Browser Navigation", detail: "Allow opening URLs and web flows" },
+                        { key: "keyboardMouseControl", label: "Keyboard/Mouse", detail: "Allow typing, shortcuts, and clicks" },
+                      ] as const).map((item) => (
+                        <label key={item.key} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-2.5 py-2 flex items-start gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions[item.key]}
+                            onChange={(e) => setPermission(item.key, e.target.checked)}
+                            className="mt-0.5"
+                          />
+                          <div className="min-w-0">
+                            <div className="text-[11px] text-black/80 dark:text-white/65">{item.label}</div>
+                            <div className="text-[9px] text-black/45 dark:text-white/35">{item.detail}</div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+
+                  {sidebarTab === "brain" && (
+                    <div className="space-y-2">
+                      <label className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-2.5 py-2 flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={binaryBrain.enabled}
+                          onChange={(e) => setBinaryBrainEnabled(e.target.checked)}
+                          className="mt-0.5"
+                        />
+                        <div>
+                          <div className="text-[11px] text-black/80 dark:text-white/65">Enable Binary Coprocessor</div>
+                          <div className="text-[9px] text-black/45 dark:text-white/35">Learns local intent patterns and adds planner hints.</div>
+                        </div>
+                      </label>
+                      <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-2.5 py-2">
+                        <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
+                        <div className="text-[18px] font-bold text-black dark:text-[#e8e8e8] tabular-nums">{brainStats.trainedSamples}</div>
+                        <div className="mt-1 text-[9px] text-black/45 dark:text-white/35">Recent intents</div>
+                        <div className="mt-1 space-y-1">
+                          {(brainStats.topIntents.slice(0, 4)).map((intent) => (
+                            <div key={intent} className="text-[10px] text-black/70 dark:text-white/55 line-clamp-1">{intent}</div>
+                          ))}
+                          {brainStats.topIntents.length === 0 && (
+                            <div className="text-[10px] text-black/45 dark:text-white/35">No training data yet</div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleExportBrain}
+                          className="flex-1 text-[9px] tracking-widest uppercase px-2 py-1 rounded border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50"
+                        >
+                          Export
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleImportBrain}
+                          className="flex-1 text-[9px] tracking-widest uppercase px-2 py-1 rounded border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50"
+                        >
+                          Import
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleResetBrain}
+                          className="flex-1 text-[9px] tracking-widest uppercase px-2 py-1 rounded border border-red-500/40 text-red-700 dark:text-red-300 hover:border-red-600/60"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Session (temp) tab */}
-                  {memTab === "session" && (
+                  {sidebarTab === "memory" && memTab === "session" && (
                     <>
                       {recentSearches.length > 0 && (
                         <div className="rounded-[10px] border border-black/20 dark:border-white/10 px-2.5 py-2 mb-2">
@@ -421,7 +553,7 @@ export function NovaChatInterface({
                   )}
 
                   {/* Universal (permanent) tab */}
-                  {memTab === "universal" && (
+                  {sidebarTab === "memory" && memTab === "universal" && (
                     <>
                       <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25 mb-1.5 px-0.5">
                         {totalMems} permanent memories
@@ -456,7 +588,7 @@ export function NovaChatInterface({
                   )}
 
                   {/* Auto-learned behavioral patterns */}
-                  {memTab === "learned" && (
+                  {sidebarTab === "memory" && memTab === "learned" && (
                     <>
                       <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25 mb-1.5 px-0.5">
                         Topics Nova is learning about you

@@ -42,6 +42,17 @@ export interface ProviderConfig {
   ollamaUrl: string;
 }
 
+export interface AutomationPermissions {
+  desktopAutomation: boolean;
+  appControl: boolean;
+  browserControl: boolean;
+  keyboardMouseControl: boolean;
+}
+
+export interface BinaryBrainConfig {
+  enabled: boolean;
+}
+
 const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
   provider: "ollama",
   apiKey: "",
@@ -63,6 +74,8 @@ interface NovaState {
   activePlan: ActivePlan | null;
 
   providerConfig: ProviderConfig;
+  permissions: AutomationPermissions;
+  binaryBrain: BinaryBrainConfig;
   isSetupComplete: boolean;
   theme: "light" | "dark";
   backgroundListening: boolean;
@@ -81,10 +94,19 @@ interface NovaState {
   updatePlanStep: (stepId: string, status: PlanStepStatus, detail?: string) => void;
   clearPlan: () => void;
   saveProviderConfig: (config: ProviderConfig) => void;
+  setPermission: (key: keyof AutomationPermissions, value: boolean) => void;
+  setBinaryBrainEnabled: (enabled: boolean) => void;
   resetSetup: () => void;
   toggleTheme: () => void;
   setBackgroundListening: (enabled: boolean) => void;
 }
+
+const DEFAULT_PERMISSIONS: AutomationPermissions = {
+  desktopAutomation: false,
+  appControl: false,
+  browserControl: false,
+  keyboardMouseControl: false,
+};
 
 export const useNovaStore = create<NovaState>()(
   persist(
@@ -100,6 +122,8 @@ export const useNovaStore = create<NovaState>()(
       activePlan: null,
 
       providerConfig: DEFAULT_PROVIDER_CONFIG,
+      permissions: DEFAULT_PERMISSIONS,
+      binaryBrain: { enabled: true },
       isSetupComplete: false,
       theme: "light",
       backgroundListening: false,
@@ -133,6 +157,10 @@ export const useNovaStore = create<NovaState>()(
         }),
       clearPlan: () => set({ activePlan: null }),
       saveProviderConfig: (config) => set({ providerConfig: config, isSetupComplete: true }),
+      setPermission: (key, value) =>
+        set((s) => ({ permissions: { ...s.permissions, [key]: value } })),
+      setBinaryBrainEnabled: (enabled) =>
+        set((s) => ({ binaryBrain: { ...s.binaryBrain, enabled } })),
       resetSetup: () => set({ isSetupComplete: false, providerConfig: DEFAULT_PROVIDER_CONFIG }),
       toggleTheme: () => set((s) => ({ theme: s.theme === "light" ? "dark" : "light" })),
       setBackgroundListening: (backgroundListening) => set({ backgroundListening }),
@@ -141,6 +169,8 @@ export const useNovaStore = create<NovaState>()(
       name: "nova-config",
       partialize: (state) => ({
         providerConfig: state.providerConfig,
+        permissions: state.permissions,
+        binaryBrain: state.binaryBrain,
         isSetupComplete: state.isSetupComplete,
         theme: state.theme,
         backgroundListening: state.backgroundListening,

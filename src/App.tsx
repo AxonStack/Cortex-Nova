@@ -5,12 +5,14 @@ import { useVoiceListener } from "./hooks/useVoiceListener";
 import { useNovaStore } from "./store/novaStore";
 import type { PlanStep } from "./store/novaStore";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { routeCommand, openUrl } from "./lib/commandRouter";
 import type { CommandResult } from "./lib/commandRouter";
 import { routeViaAI } from "./lib/providerClient";
 import { speak } from "./lib/speechSynthesis";
 import { trackActivity } from "./lib/memory";
 import { closeTaskDialog, showTaskDialog } from "./lib/taskDialogWindow";
+import { trainBinaryBrain } from "./lib/binaryBrain";
 
 function NovaApp() {
   const [isHoldingSpace, setIsHoldingSpace] = useState(false);
@@ -22,7 +24,7 @@ function NovaApp() {
     setStatus, setTranscript, setResponse,
     addMessage, clearMessages, resetSetup, theme,
     addActionLog, setPlan, updatePlanStep, clearPlan,
-    backgroundListening, setBackgroundListening, setError, activePlan,
+    backgroundListening, setBackgroundListening, setError, activePlan, permissions, setPermission,
   } = useNovaStore();
   const openaiKey = providerConfig.provider === "openai" ? providerConfig.apiKey : undefined;
   const { voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, stopAll } =
@@ -97,13 +99,24 @@ function NovaApp() {
 
   type DesktopAction = Extract<
     CommandResult,
-    { type: "browser_navigate" | "desktop_open_app" | "desktop_close_app" | "desktop_type_text" | "desktop_mouse_click" }
+    {
+      type:
+        | "browser_navigate"
+        | "desktop_open_app"
+        | "desktop_close_app"
+        | "desktop_focus_window"
+        | "desktop_press_key"
+        | "desktop_type_text"
+        | "desktop_mouse_click"
+    }
   >;
 
   const isDesktopAction = (result: CommandResult): result is DesktopAction =>
     result.type === "browser_navigate" ||
     result.type === "desktop_open_app" ||
     result.type === "desktop_close_app" ||
+    result.type === "desktop_focus_window" ||
+    result.type === "desktop_press_key" ||
     result.type === "desktop_type_text" ||
     result.type === "desktop_mouse_click";
 
@@ -115,6 +128,10 @@ function NovaApp() {
         return { label: action.label, detail: action.app };
       case "desktop_close_app":
         return { label: action.label, detail: action.app };
+      case "desktop_focus_window":
+        return { label: action.label, detail: action.name };
+      case "desktop_press_key":
+        return { label: action.label, detail: action.keys };
       case "desktop_type_text":
         return { label: "Typing text", detail: action.text };
       case "desktop_mouse_click":
@@ -123,6 +140,59 @@ function NovaApp() {
   };
 
   const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  function requiredPermissionForAction(action: DesktopAction): keyof typeof permissions {
+    if (action.type === "desktop_type_text" || action.type === "desktop_mouse_click" || action.type === "desktop_press_key") {
+      return "keyboardMouseControl";
+    }
+    if (action.type === "browser_navigate") return "browserControl";
+    return "appControl";
+  }
+
+  async function ensureDesktopPermissions(actions: DesktopAction[]): Promise<boolean> {
+    const request = async (message: string) =>
+      await confirm(message, { title: "Cortex Nova Permission", kind: "warning", okLabel: "Allow", cancelLabel: "Deny" });
+
+    if (!permissions.desktopAutomation) {
+      const allowDesktop = await request("Nova needs Desktop Automation permission to continue. Allow now?");
+      if (!allowDesktop) {
+        const msg = "Desktop automation permission denied. You can enable it anytime in the Permissions tab.";
+        addMessage({ role: "ai", text: msg });
+        setResponse(msg);
+        setStatus("speaking");
+        speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+        return false;
+      }
+      setPermission("desktopAutomation", true);
+    }
+    const missing = actions
+      .map(requiredPermissionForAction)
+      .find((key) => !permissions[key]);
+    if (!missing) return true;
+    const grant = await request(`Nova needs ${missing} permission for this task. Allow now?`);
+    if (grant) {
+      setPermission(missing, true);
+      return true;
+    }
+    const labels: Record<keyof typeof permissions, string> = {
+      desktopAutomation: "desktop automation",
+      appControl: "app control",
+      browserControl: "browser control",
+      keyboardMouseControl: "keyboard and mouse control",
+    };
+    const msg = `Permission required: ${labels[missing]}. Open the Permissions tab and enable it, then ask again.`;
+    addMessage({ role: "ai", text: msg });
+    setResponse(msg);
+    setStatus("speaking");
+    speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+    return false;
+  }
+
+  async function ensureBrowserPermission(): Promise<boolean> {
+    return ensureDesktopPermissions([
+      { type: "browser_navigate", url: "about:blank", label: "Opening browser" },
+    ]);
+  }
 
   // Build the visible checkpoint list for a single desktop action — multiple
   // sub-steps per action so the user sees granular progress (Locating → Launching →
@@ -141,6 +211,18 @@ function NovaApp() {
           { id: id(), label: `Finding ${action.app}`,     detail: "Looking for the running application",   status: "pending" },
           { id: id(), label: `Closing ${action.app}`,     detail: "Sending quit/terminate request",        status: "pending" },
           { id: id(), label: "Application closed",        detail: action.label,                            status: "pending" },
+        ];
+      case "desktop_focus_window":
+        return [
+          { id: id(), label: `Finding ${action.name}`,    detail: "Searching for the window",              status: "pending" },
+          { id: id(), label: `Focusing ${action.name}`,   detail: "Bringing it to the foreground",         status: "pending" },
+          { id: id(), label: "Window ready",              detail: action.label,                            status: "pending" },
+        ];
+      case "desktop_press_key":
+        return [
+          { id: id(), label: "Preparing keystroke",       detail: "Resolving key sequence",                status: "pending" },
+          { id: id(), label: `Pressing ${action.keys}`,   detail: "Sending keyboard shortcut",             status: "pending" },
+          { id: id(), label: "Keystroke sent",            detail: action.label,                            status: "pending" },
         ];
       case "browser_navigate":
         return [
@@ -207,6 +289,32 @@ function NovaApp() {
       await delay(400);
       updatePlanStep(s3, "done");
 
+    } else if (action.type === "desktop_focus_window") {
+      updatePlanStep(s1, "active");
+      await delay(150);
+      updatePlanStep(s1, "done");
+
+      updatePlanStep(s2, "active");
+      await invoke("focus_window", { name: action.name });
+      updatePlanStep(s2, "done");
+
+      updatePlanStep(s3, "active");
+      await delay(250);
+      updatePlanStep(s3, "done");
+
+    } else if (action.type === "desktop_press_key") {
+      updatePlanStep(s1, "active");
+      await delay(100);
+      updatePlanStep(s1, "done");
+
+      updatePlanStep(s2, "active");
+      await invoke("press_key", { keys: action.keys });
+      updatePlanStep(s2, "done");
+
+      updatePlanStep(s3, "active");
+      await delay(120);
+      updatePlanStep(s3, "done");
+
     } else if (action.type === "desktop_type_text") {
       updatePlanStep(s1, "active");
       await delay(150);
@@ -236,6 +344,8 @@ function NovaApp() {
   }
 
   async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string) {
+    if (!(await ensureDesktopPermissions(actions))) return;
+
     // Expand every action into its 3 sub-checkpoints
     const expanded: { action: DesktopAction; steps: PlanStep[] }[] = actions.map((action) => ({
       action,
@@ -269,12 +379,15 @@ function NovaApp() {
     setResponse(finalMessage);
     addMessage({ role: "ai", text: finalMessage });
     setStatus("speaking");
+    trainBinaryBrain(transcript, actions.map((a) => a.label));
     // Keep dialog visible for 5s after the spoken summary so user sees all the green ticks.
     speak(finalMessage, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 5000); });
   }
 
   // Multi-step YouTube automation — every visible phase is a checkpoint.
   async function executeYouTubePlay(query: string) {
+    if (!(await ensureBrowserPermission())) return;
+
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
     const id = () => crypto.randomUUID();
     const steps: PlanStep[] = [
@@ -342,6 +455,7 @@ function NovaApp() {
       : `Opened YouTube search for "${query}". Click the first result to play.`;
     setResponse(summary);
     addMessage({ role: "ai", text: summary });
+    trainBinaryBrain(transcript, [`youtube:${query}`]);
     speak(summary, () => { setStatus("idle"); resumeWakeWord(); setTimeout(() => clearPlan(), 5000); });
   }
 
@@ -350,6 +464,8 @@ function NovaApp() {
     topic: string,
     steps: Array<{ id: string; label: string; detail: string; url: string; delayMs: number }>,
   ) {
+    if (!(await ensureBrowserPermission())) return;
+
     const planSteps: PlanStep[] = steps.map((s) => ({
       id: s.id,
       label: s.label,
@@ -383,6 +499,7 @@ function NovaApp() {
     const summary = `Opened ${steps.length} sources for "${topic}". Check your browser.`;
     setResponse(summary);
     addMessage({ role: "ai", text: summary });
+    trainBinaryBrain(transcript, [`research:${topic}`]);
     speak(summary, () => {
       setStatus("idle");
       resumeWakeWord();

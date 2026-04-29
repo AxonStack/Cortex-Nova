@@ -38,6 +38,23 @@ Anything not recognised as an OS command goes to your AI provider, with relevant
 
 ---
 
+## Permission-Gated Automation
+
+Nova now gates desktop control behind explicit user permissions.
+
+1. When Nova needs a missing permission during a task, it asks for approval first.
+2. If you approve, Nova continues the task immediately.
+3. You can manage permissions manually in the in-app **PERMS** tab.
+4. Permission prompts use native Tauri dialog windows (Allow/Deny).
+
+Permission scopes:
+- `desktopAutomation` (master switch)
+- `appControl` (open/close applications)
+- `browserControl` (navigation + browser task flows)
+- `keyboardMouseControl` (typing, keypresses, mouse clicks)
+
+---
+
 ## Background Mode — Always Listening
 
 Nova is designed as a background application. The wake word detector runs continuously — you don't need to click anything.
@@ -105,30 +122,30 @@ The AI uses this context to give personalised answers without you having to repe
 
 ## System Automation
 
-Nova can control your desktop — type text, move the mouse, click.
+Nova can control your desktop with native Tauri commands:
+- open/close applications
+- open URLs in browser
+- focus windows
+- press key combinations
+- type text
+- move + click mouse
 
-### Typing (`type [text]`)
-Sends keystrokes to whatever application currently has focus.
+For broad instructions (`open X then do Y`), Nova now uses a dynamic AI planner that emits executable action chains instead of relying only on hardcoded regex routes.
 
-| Platform | Backend |
-|---|---|
-| Linux | `xdotool type --clearmodifiers` |
-| macOS | `osascript` System Events keystroke |
-| Windows | PowerShell `WScript.Shell.SendKeys` |
+---
 
-**Linux prerequisite:** `sudo apt install xdotool`
+## Binary Coprocessor + Main AI Brain
 
-Example: "type my name is nova" → Nova types that string into your focused text field.
+Nova now has two cooperating layers:
+- Main AI planner: interprets natural language and builds action plans.
+- Binary coprocessor: lightweight local learner that tracks successful intent patterns and injects compact context hints into planner prompts.
 
-### Mouse Click (`click at X Y`)
-Moves the cursor to absolute screen coordinates and left-clicks.
+The binary coprocessor is local-first and incremental. It does not replace the main LLM; it improves consistency for your repeated workflows over time. You can enable/disable it in the in-app **BRAIN** tab.
 
-Example: "click at 960 540" → clicks the centre of a 1920×1080 screen.
-
-### Planned Automation
-Future versions will chain these primitives with AI vision to complete full browser tasks:
-- "Search YouTube for lo-fi and click the first result"
-- "Open Gmail, find the email from John, and reply with 'on my way'"
+`BRAIN` tab controls:
+- Export training state
+- Import training state
+- Reset training state
 
 ---
 
@@ -168,13 +185,12 @@ Press `◑ DARK` / `☀ LIGHT` in the top-right to toggle. Theme is persisted to
 | `play ... [on youtube/spotify]` | Media |
 | `search [for] ...` | Web search (Google) |
 | `search youtube for ...` | YouTube search |
-| `open [site]` | Open shorthand URL |
-| `go to [url/site]` | Navigate |
-| `email [person] about [subject] saying [body]` | Gmail compose |
+| `open / go to / launch / run ...` | Dynamic AI-planned desktop flow |
+| `email ...` | Dynamic AI-planned compose flow |
 | Hold `SPACE` | Push-to-talk voice input |
-| Anything else | → AI query (with memory context) |
+| Anything else | → AI query / planner with memory + binary context |
 
-**Built-in sites:** YouTube, Gmail, GitHub, Twitter, Reddit, Spotify, Netflix, Google, LinkedIn, Instagram, Discord, Notion, ChatGPT
+**Note:** common media/search/memory commands remain fast-path routed; broader desktop tasks are AI-planned dynamically.
 
 ---
 
@@ -191,8 +207,8 @@ node --version
 # pnpm
 pnpm --version
 
-# Linux: system libs + automation tools
-sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev librsvg2-dev xdotool
+# Linux: system libs
+sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev librsvg2-dev
 ```
 
 ---
@@ -233,14 +249,15 @@ cortex-nova/
 │   ├── hooks/
 │   │   └── useVoiceListener.ts     # Wake word + command recognition + window focus
 │   ├── lib/
-│   │   ├── commandRouter.ts        # Pattern matching → OS actions or AI query
+│   │   ├── commandRouter.ts        # Fast-path command routing + AI fallback
 │   │   ├── memory.ts               # Binary Memory Language Map
-│   │   ├── providerClient.ts       # AI provider client (memory context injection)
+│   │   ├── binaryBrain.ts          # Local binary coprocessor learning hints
+│   │   ├── providerClient.ts       # AI planner + provider clients
 │   │   └── speechSynthesis.ts      # Text-to-speech
 │   └── store/
-│       └── novaStore.ts            # Zustand (voice state + config + theme, persisted)
+│       └── novaStore.ts            # Zustand (voice state + permissions + brain + config)
 ├── src-tauri/
-│   └── src/lib.rs                  # Rust: open_url, type_text, mouse_click, speech_api_supported
+│   └── src/lib.rs                  # Rust desktop automation commands
 ├── CLAUDE.md                       # Claude Code session instructions
 └── README.md                       # This file
 ```
@@ -251,7 +268,7 @@ cortex-nova/
 
 | Technology | Role |
 |---|---|
-| Tauri 2 (Rust) | Desktop shell, system commands (open_url, type_text, mouse_click) |
+| Tauri 2 (Rust) | Desktop shell, native automation (open/focus/type/key/click) |
 | React 19 + TypeScript strict | Frontend UI |
 | Tailwind CSS v4 | Styling with dark/light theme |
 | Zustand 5 | Global state (persisted to localStorage) |
@@ -259,7 +276,7 @@ cortex-nova/
 | Anthropic SDK | Claude claude-sonnet-4-6 |
 | OpenAI SDK | GPT-4o |
 | Ollama REST | Free local AI |
-| xdotool / osascript / PowerShell | Cross-platform system input automation |
+| Enigo + native OS commands | Cross-platform system input automation |
 
 ---
 
@@ -270,9 +287,10 @@ cortex-nova/
 - Check microphone permissions in your OS
 - On Linux: Web Speech API is not available in WebKitGTK — voice runs in the host browser if you use `pnpm dev` in a real browser
 
-### `type` command does nothing
-- Linux: install xdotool — `sudo apt install xdotool`
-- Make sure the target application window is focused before speaking
+### Desktop actions are denied
+- Open the in-app **PERMS** tab
+- Enable `Desktop Automation` and required scopes (`App`, `Browser`, `Keyboard/Mouse`)
+- Retry the same command
 
 ### Ollama not connecting
 ```bash
@@ -294,8 +312,10 @@ Normal — Rust compiles from scratch (~2–5 min). Subsequent builds use cache 
 - [ ] System tray icon — hide window, keep wake word running in background
 - [ ] Auto-start on login (OS startup entry via Tauri)
 - [ ] Screen capture + AI vision for click-by-description ("click the Send button")
-- [ ] Multi-step task chains ("open YouTube, search X, click the first result, skip the ad")
+- [x] Dynamic multi-step AI planner for desktop action chains
 - [ ] Memory importance decay — old low-weight memories fade over time
+- [ ] Per-app launcher discovery cache to improve obscure app opening reliability
+- [x] Per-app launcher discovery cache (Linux `.desktop` IDs) for better app launch matching
 - [ ] Memory export/import (JSON file)
 - [ ] Per-provider conversation history (multi-turn context)
 - [ ] Plugin system for custom command handlers

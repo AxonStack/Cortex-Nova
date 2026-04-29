@@ -84,34 +84,62 @@ function buildCliPrompt(systemPrompt: string, query: string): string {
   return `${systemPrompt}\n\n[User]\n${query}`;
 }
 
+const VISION_SYSTEM = "You are Cortex Nova, a helpful voice assistant with vision. Describe and analyze images accurately and concisely. Respond conversationally in 2-4 sentences.";
+
 async function askAnthropicVision(
   query: string,
   config: ProviderConfig,
   images: ImageAttachment[],
 ): Promise<string> {
-  if (config.provider !== "anthropic" || !config.apiKey) {
-    return "Image understanding requires the Anthropic provider. Please configure your API key in Setup.";
-  }
-  const client = new Anthropic({ apiKey: config.apiKey, dangerouslyAllowBrowser: true });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const content: any[] = images.map((img) => ({
-    type: "image",
-    source: {
-      type: "base64",
-      media_type: img.mimeType,
-      data: img.dataUrl.includes(",") ? img.dataUrl.split(",")[1] : img.dataUrl,
-    },
-  }));
-  content.push({ type: "text", text: query });
-  const message = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1024,
-    system: "You are Cortex Nova, a helpful voice assistant with vision. Describe and analyze images accurately and concisely. Respond conversationally in 2-4 sentences.",
+  if (config.provider === "anthropic" && config.apiKey) {
+    const client = new Anthropic({ apiKey: config.apiKey, dangerouslyAllowBrowser: true });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    messages: [{ role: "user", content }] as any,
-  });
-  const block = message.content.find((b) => b.type === "text");
-  return block?.type === "text" ? block.text : "I couldn't analyze the image.";
+    const content: any[] = images.map((img) => ({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: img.mimeType,
+        data: img.dataUrl.includes(",") ? img.dataUrl.split(",")[1] : img.dataUrl,
+      },
+    }));
+    content.push({ type: "text", text: query });
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      system: VISION_SYSTEM,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      messages: [{ role: "user", content }] as any,
+    });
+    const block = message.content.find((b) => b.type === "text");
+    return block?.type === "text" ? block.text : "I couldn't analyze the image.";
+  }
+
+  if (config.provider === "ollama") {
+    // Ollama vision: base64 images go in the `images` array of the message
+    const base64Images = images.map((img) =>
+      img.dataUrl.includes(",") ? img.dataUrl.split(",")[1] : img.dataUrl
+    );
+    const res = await fetch(`${config.ollamaUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.ollamaModel,
+        stream: false,
+        messages: [
+          { role: "system", content: VISION_SYSTEM },
+          { role: "user", content: query, images: base64Images },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const hint = config.ollamaModel.includes("llava") ? "" : ` Try switching to a vision model like "llava" in Setup.`;
+      throw new Error(`Ollama vision failed (${res.status}).${hint}`);
+    }
+    const data = (await res.json()) as { message?: { content?: string } };
+    return data.message?.content ?? "I couldn't analyze the image.";
+  }
+
+  return "Image understanding requires Anthropic or Ollama (with a vision model like llava). Please update your provider in Setup.";
 }
 
 async function askAnthropic(

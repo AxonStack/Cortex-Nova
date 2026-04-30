@@ -12,7 +12,7 @@ import { WaveformAnimation } from "./WaveformAnimation";
 import { StatusIndicator } from "./StatusIndicator";
 import {
   getAllMemories, memoryCount, getTempMemory,
-  getRecentSearches, getBehaviorPatterns,
+  getRecentSearches, getBehaviorPatterns, explainRecall,
   remember,
   type Memory, type TempEntry, type BehaviorPattern,
 } from "../lib/memory";
@@ -84,9 +84,9 @@ export function NovaChatInterface({
   const {
     status, transcript, messages, errorMessage,
     providerConfig, theme, toggleTheme,
-    actionLog, sessionStart, activePlan, permissions, setPermission, binaryBrain, setBinaryBrainEnabled,
+    actionLog, sessionStart, activePlan, permissions, appPolicy, setPermission, setAppPolicyMode, setAppPolicyEntries, binaryBrain, setBinaryBrainEnabled,
     saveProviderConfig,
-    learnedMacros, saveMacro, deleteMacro,
+    learnedMacros, saveMacro, deleteMacro, markWorkflowRun, markWorkflowOutcome,
   } = useNovaStore();
 
   const isWaveformActive = status === "listening" || status === "speaking";
@@ -105,12 +105,14 @@ export function NovaChatInterface({
 
   // Active memory tab
   const [memTab, setMemTab] = useState<"universal" | "session" | "learned">("session");
-  const [sidebarPage, setSidebarPage] = useState<"home" | "model" | "permissions" | "brain">("home");
+  const [sidebarPage, setSidebarPage] = useState<"home" | "model" | "workflows" | "health" | "permissions" | "brain">("home");
   const [modelProvider, setModelProvider] = useState(providerConfig.provider);
   const [ollamaUrlDraft, setOllamaUrlDraft] = useState(providerConfig.ollamaUrl || "http://localhost:11434");
   const [ollamaModelDraft, setOllamaModelDraft] = useState(providerConfig.ollamaModel || "");
   const [ollamaInstalled, setOllamaInstalled] = useState<string[]>([]);
   const [modelMsg, setModelMsg] = useState<string>("");
+  const [policyEntriesDraft, setPolicyEntriesDraft] = useState(appPolicy.entries.join(", "));
+  const [recallQuery, setRecallQuery] = useState("telegram");
   const [brainModal, setBrainModal] = useState<{
     mode: "notice" | "import" | "confirm_reset";
     title: string;
@@ -147,6 +149,10 @@ export function NovaChatInterface({
     setOllamaUrlDraft(providerConfig.ollamaUrl || "http://localhost:11434");
     setOllamaModelDraft(providerConfig.ollamaModel || "");
   }, [providerConfig]);
+
+  useEffect(() => {
+    setPolicyEntriesDraft(appPolicy.entries.join(", "));
+  }, [appPolicy.entries]);
 
   async function refreshOllamaModels() {
     const models = await fetchOllamaModels(ollamaUrlDraft.trim() || "http://localhost:11434");
@@ -221,6 +227,31 @@ export function NovaChatInterface({
     onSubmitText(text, attachments.length > 0 ? attachments : undefined);
     setInputText("");
     setAttachments([]);
+  }
+
+  function runLearnedWorkflow(name: string) {
+    if (isBusy) return;
+    const wf = learnedMacros.find((m) => m.name === name);
+    if (wf) markWorkflowRun(wf.id);
+    const command = wf?.command?.trim();
+    if (command) {
+      onSubmitText(`workflow:${wf?.id}::${command}`);
+      return;
+    }
+    if (wf) onSubmitText(`workflow:${wf.id}::Run this workflow safely: ${name}`);
+    else onSubmitText(`Run this workflow safely: ${name}`);
+  }
+
+  function saveCurrentInputAsWorkflow() {
+    const text = inputText.trim();
+    if (!text) return;
+    saveMacro({
+      name: `Manual workflow: ${text.slice(0, 48)}`,
+      events: [],
+      command: text,
+    });
+    remember(`Workflow saved manually: ${text}`, "user", 0.72);
+    setInputText("");
   }
 
   const cfg = providerConfig;
@@ -452,6 +483,8 @@ export function NovaChatInterface({
             {([
               { id: "home", label: "Home" },
               { id: "model", label: "Model" },
+              { id: "workflows", label: "Flows" },
+              { id: "health", label: "Health" },
               { id: "permissions", label: "Perms" },
               { id: "brain", label: "Brain" },
             ] as const).map((page) => (
@@ -552,6 +585,107 @@ export function NovaChatInterface({
           )}
 
           {/* Permissions page */}
+          {sidebarPage === "workflows" && (
+            <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3">
+                <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Workflow Studio</div>
+                <div className="text-[12px] text-black/70 dark:text-white/55 mt-1">Launch learned workflows and save manual ones from quick commands.</div>
+              </div>
+
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] tracking-widest uppercase text-black/40 dark:text-white/35">Manual Capture</div>
+                  <button
+                    type="button"
+                    onClick={saveCurrentInputAsWorkflow}
+                    disabled={!inputText.trim()}
+                    className="text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55 disabled:opacity-35"
+                  >
+                    Save Input
+                  </button>
+                </div>
+                <div className="text-[10px] text-black/45 dark:text-white/35 mt-1">Type a command below, then save it as a reusable workflow.</div>
+              </div>
+
+              {learnedMacros.length === 0 ? (
+                <div className="rounded-[12px] border border-dashed border-black/25 dark:border-white/15 px-3 py-3 text-[11px] text-black/40 dark:text-white/30">
+                  No workflows yet. Enable Brain learning mode or save one manually.
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {learnedMacros.slice().reverse().map((macro) => (
+                    <div key={macro.id} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 flex items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] text-black/80 dark:text-white/65 truncate">{macro.name}</div>
+                        <div className="text-[9px] text-black/35 dark:text-white/25">
+                          {macro.events.length} events · {new Date(macro.createdAt).toLocaleDateString()}
+                          {` · runs ${macro.runs ?? 0} · ok ${macro.successes ?? 0} · fail ${macro.failures ?? 0}`}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => runLearnedWorkflow(macro.name)}
+                        disabled={isBusy}
+                        className="text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55 disabled:opacity-35"
+                      >
+                        Run
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteMacro(macro.id)}
+                        className="text-[9px] px-2 py-1 rounded border border-red-500/30 text-red-600 dark:text-red-400"
+                      >
+                        Del
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => markWorkflowOutcome(macro.id, true)}
+                        className="text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55"
+                      >
+                        +OK
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => markWorkflowOutcome(macro.id, false)}
+                        className="text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55"
+                      >
+                        +Fail
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {sidebarPage === "health" && (
+            <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3">
+                <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Provider Health</div>
+                <div className="text-[12px] text-black/70 dark:text-white/55 mt-1">Live status and reliability hints for current runtime.</div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2">
+                  <div className="text-[9px] uppercase tracking-widest text-black/35 dark:text-white/30">Provider</div>
+                  <div className="text-[12px] text-black/80 dark:text-white/65">{providerName}</div>
+                </div>
+                <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2">
+                  <div className="text-[9px] uppercase tracking-widest text-black/35 dark:text-white/30">Connection</div>
+                  <div className="text-[12px] text-black/80 dark:text-white/65">{connLabel}</div>
+                </div>
+                <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2">
+                  <div className="text-[9px] uppercase tracking-widest text-black/35 dark:text-white/30">Avg Latency</div>
+                  <div className="text-[12px] text-black/80 dark:text-white/65">{avgLatency !== null ? fmtMs(avgLatency) : "N/A"}</div>
+                </div>
+                <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2">
+                  <div className="text-[9px] uppercase tracking-widest text-black/35 dark:text-white/30">Errors</div>
+                  <div className="text-[12px] text-black/80 dark:text-white/65">{actionLog.filter((a) => /error|failed|denied/i.test(a.label)).length}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Permissions page */}
           {sidebarPage === "permissions" && (
             <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
               <div className="rounded-[12px] border border-black/60 dark:border-white/25 bg-gradient-to-r from-[#f2f2f2] via-[#e7e7e7] to-[#d8d8d8] dark:from-[#2b2b2b] dark:via-[#232323] dark:to-[#1a1a1a] px-3.5 py-3">
@@ -580,6 +714,31 @@ export function NovaChatInterface({
                   </div>
                 </label>
               ))}
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3 flex flex-col gap-2">
+                <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Automation App Guard</div>
+                <select
+                  value={appPolicy.mode}
+                  onChange={(e) => setAppPolicyMode(e.target.value as "off" | "allowlist" | "denylist")}
+                  className="w-full rounded-[8px] border border-black/30 dark:border-white/20 bg-white dark:bg-[#111] px-2 py-1 text-[11px] text-black dark:text-white"
+                >
+                  <option value="off">Off</option>
+                  <option value="allowlist">Allow only listed apps</option>
+                  <option value="denylist">Block listed apps</option>
+                </select>
+                <input
+                  value={policyEntriesDraft}
+                  onChange={(e) => setPolicyEntriesDraft(e.target.value)}
+                  placeholder="comma-separated app/window names"
+                  className="w-full rounded-[8px] border border-black/30 dark:border-white/20 bg-white dark:bg-[#111] px-2 py-1 text-[11px] text-black dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => setAppPolicyEntries(policyEntriesDraft.split(",").map((x) => x.trim()).filter(Boolean))}
+                  className="self-start text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55"
+                >
+                  Apply Policy
+                </button>
+              </div>
             </div>
           )}
 
@@ -654,6 +813,25 @@ export function NovaChatInterface({
               </div>
 
               <div className="border-t border-black/10 dark:border-white/10" />
+
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3">
+                <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Why This Memory Matched</div>
+                <div className="flex items-center gap-2 mt-2">
+                  <input
+                    value={recallQuery}
+                    onChange={(e) => setRecallQuery(e.target.value)}
+                    className="flex-1 rounded-[8px] border border-black/30 dark:border-white/20 bg-white dark:bg-[#111] px-2 py-1 text-[11px] text-black dark:text-white"
+                  />
+                </div>
+                <div className="mt-2 space-y-1 max-h-[130px] overflow-y-auto">
+                  {explainRecall(recallQuery, 3).map((x) => (
+                    <div key={x.memoryId} className="rounded-[8px] border border-black/20 dark:border-white/15 px-2 py-1">
+                      <div className="text-[10px] text-black/75 dark:text-white/65 line-clamp-1">{x.text}</div>
+                      <div className="text-[9px] text-black/45 dark:text-white/35">score {x.score.toFixed(2)} · tags {x.matchedTags.slice(0, 3).join(", ") || "none"}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               {/* Macro Learning */}
               <div className="flex flex-col gap-2">

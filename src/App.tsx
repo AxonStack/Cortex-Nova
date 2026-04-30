@@ -25,7 +25,7 @@ function NovaApp() {
     setStatus, setTranscript, setResponse,
     addMessage, clearMessages, resetSetup, theme,
     addActionLog, setPlan, updatePlanStep, clearPlan,
-    backgroundListening, setBackgroundListening, setError, activePlan, permissions, setPermission,
+    backgroundListening, setBackgroundListening, setError, activePlan, permissions, appPolicy, setPermission,
   } = useNovaStore();
   const openaiKey = providerConfig.provider === "openai" ? providerConfig.apiKey : undefined;
   const { voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, stopAll } =
@@ -142,6 +142,24 @@ function NovaApp() {
 
   const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+  async function invokeWithRetry<T = unknown>(
+    command: string,
+    args: Record<string, unknown>,
+    retries = 2,
+    baseDelayMs = 220,
+  ): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await invoke<T>(command, args);
+      } catch (err) {
+        lastErr = err;
+        if (attempt < retries) await delay(baseDelayMs * (attempt + 1));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
   function requiredPermissionForAction(action: DesktopAction): keyof typeof permissions {
     if (action.type === "desktop_type_text" || action.type === "desktop_mouse_click" || action.type === "desktop_press_key") {
       return "keyboardMouseControl";
@@ -187,6 +205,46 @@ function NovaApp() {
     setStatus("speaking");
     speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
     return false;
+  }
+
+  function isHighRiskAction(action: DesktopAction): boolean {
+    if (action.type === "desktop_press_key") {
+      const k = action.keys.toLowerCase();
+      return k === "return" || k === "ctrl+return";
+    }
+    if (action.type === "desktop_type_text") {
+      const t = action.text.toLowerCase();
+      return /\b(password|passcode|secret|token|api[_ -]?key)\b/.test(t);
+    }
+    return false;
+  }
+
+  async function ensureHighRiskApproval(actions: DesktopAction[]): Promise<boolean> {
+    const risky = actions.filter(isHighRiskAction);
+    if (!risky.length) return true;
+    const summary = risky.slice(0, 3).map((a) => describeDesktopAction(a).label).join("; ");
+    return confirm(
+      `High-risk actions detected: ${summary}. Continue?`,
+      { title: "Cortex Nova Safety Check", kind: "warning", okLabel: "Continue", cancelLabel: "Cancel" }
+    );
+  }
+
+  function appPolicyBlocks(action: DesktopAction): string | null {
+    if (appPolicy.mode === "off") return null;
+    const target = (
+      action.type === "desktop_open_app" || action.type === "desktop_close_app"
+        ? action.app
+        : action.type === "desktop_focus_window"
+        ? action.name
+        : ""
+    ).toLowerCase();
+    if (!target) return null;
+    const entries = appPolicy.entries.map((e) => e.toLowerCase().trim()).filter(Boolean);
+    if (!entries.length) return null;
+    const matches = entries.some((e) => target.includes(e));
+    if (appPolicy.mode === "allowlist" && !matches) return `Blocked by allowlist policy: "${target}" is not approved.`;
+    if (appPolicy.mode === "denylist" && matches) return `Blocked by denylist policy: "${target}" is denied.`;
+    return null;
   }
 
   async function ensureBrowserPermission(): Promise<boolean> {
@@ -252,7 +310,7 @@ function NovaApp() {
     if (action.type === "browser_navigate") {
       updatePlanStep(s1, "active");
       await delay(150);
-      await invoke("open_url", { url: action.url });
+      await invokeWithRetry("open_url", { url: action.url });
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
@@ -270,11 +328,13 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invoke("open_application", { app: action.app });
+      await invokeWithRetry("open_application", { app: action.app });
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
       await delay(800);
+      // Post-action verification: app should be focusable after launch.
+      await invokeWithRetry("focus_window", { name: action.app }, 1, 180);
       updatePlanStep(s3, "done");
 
     } else if (action.type === "desktop_close_app") {
@@ -283,7 +343,7 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invoke("close_application", { app: action.app });
+      await invokeWithRetry("close_application", { app: action.app });
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
@@ -296,7 +356,7 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invoke("focus_window", { name: action.name });
+      await invokeWithRetry("focus_window", { name: action.name });
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
@@ -309,7 +369,7 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invoke("press_key", { keys: action.keys });
+      await invokeWithRetry("press_key", { keys: action.keys });
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
@@ -322,7 +382,7 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invoke("type_text", { text: action.text });
+      await invokeWithRetry("type_text", { text: action.text });
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
@@ -335,7 +395,7 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invoke("mouse_click", { x: action.x, y: action.y });
+      await invokeWithRetry("mouse_click", { x: action.x, y: action.y });
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
@@ -346,6 +406,24 @@ function NovaApp() {
 
   async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string) {
     if (!(await ensureDesktopPermissions(actions))) return;
+    for (const action of actions) {
+      const blocked = appPolicyBlocks(action);
+      if (blocked) {
+        addMessage({ role: "ai", text: blocked });
+        setResponse(blocked);
+        setStatus("speaking");
+        speak(blocked, () => { setStatus("idle"); resumeWakeWord(); });
+        return;
+      }
+    }
+    if (!(await ensureHighRiskApproval(actions))) {
+      const msg = "Cancelled. High-risk action was not approved.";
+      addMessage({ role: "ai", text: msg });
+      setResponse(msg);
+      setStatus("speaking");
+      speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+      return;
+    }
 
     // Expand every action into its 3 sub-checkpoints
     const expanded: { action: DesktopAction; steps: PlanStep[] }[] = actions.map((action) => ({
@@ -514,12 +592,35 @@ function NovaApp() {
     if (status !== "listening" || !transcript.trim() || isHoldingSpace) return;
 
     const handle = async () => {
+      const workflowMatch = transcript.trim().match(/^workflow:([a-f0-9-]{8,})::([\s\S]+)$/i);
+      const workflowId = workflowMatch?.[1];
+      const rawInput = (workflowMatch?.[2] ?? transcript).trim();
+      const isSimulation = /^(?:simulate|plan only|dry run)\b/i.test(rawInput);
+      const normalizedInput = rawInput.replace(/^(?:simulate|plan only|dry run)\s*[:\-]?\s*/i, "").trim() || rawInput;
       const attachments = pendingAttachmentsRef.current.splice(0);
       addMessage({ role: "user", text: transcript });
       setStatus("processing");
       const t0 = performance.now();
 
       try {
+        if (isSimulation && !attachments.length) {
+          const sim = await routeCommand(normalizedInput);
+          const simMsg =
+            sim.type === "command_chain" ? `Simulation only: would run ${sim.steps.length} planned steps.`
+            : sim.type === "youtube_play" ? `Simulation only: would play "${sim.query}" on YouTube.`
+            : sim.type === "live_score" ? `Simulation only: would open live score for ${sim.query}.`
+            : sim.type === "research" ? `Simulation only: would run research plan for "${sim.topic}".`
+            : sim.type === "os_action" ? `Simulation only: ${sim.message}`
+            : isDesktopAction(sim) ? `Simulation only: would execute "${sim.label}".`
+            : `Simulation only: would query AI with "${sim.query}".`;
+          addMessage({ role: "ai", text: simMsg });
+          setResponse(simMsg);
+          setStatus("speaking");
+          speak(simMsg, () => { setStatus("idle"); resumeWakeWord(); });
+          if (workflowId) useNovaStore.getState().markWorkflowOutcome(workflowId, true);
+          return;
+        }
+
         // If there are image attachments, skip OS routing and go straight to AI vision
         if (attachments.length > 0) {
           const imageAtts = attachments.filter((a) => a.mimeType.startsWith("image/"));
@@ -530,7 +631,7 @@ function NovaApp() {
               return `[Document: ${a.name}]\n${atob(b64)}`;
             } catch { return `[Document: ${a.name}]`; }
           }).join("\n\n");
-          const queryWithDocs = docContext ? `${docContext}\n\n${transcript}` : transcript;
+          const queryWithDocs = docContext ? `${docContext}\n\n${normalizedInput}` : normalizedInput;
           trackActivity("ai", queryWithDocs);
           const aiResult = await routeViaAI(queryWithDocs, providerConfig, imageAtts);
           const latencyMs = Math.round(performance.now() - t0);
@@ -543,10 +644,11 @@ function NovaApp() {
           } else if (isDesktopAction(aiResult)) {
             await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);
           }
+          if (workflowId) useNovaStore.getState().markWorkflowOutcome(workflowId, true);
           return;
         }
 
-        const result = await routeCommand(transcript);
+        const result = await routeCommand(normalizedInput);
 
         if (result.type === "command_chain") {
           const last = result.steps[result.steps.length - 1];
@@ -690,7 +792,9 @@ function NovaApp() {
             speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
           }
         }
+        if (workflowId) useNovaStore.getState().markWorkflowOutcome(workflowId, true);
       } catch (err) {
+        if (workflowId) useNovaStore.getState().markWorkflowOutcome(workflowId, false);
         clearPlan();
         useNovaStore.getState().setError(err instanceof Error ? err.message : "Something went wrong.");
       }

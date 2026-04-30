@@ -49,6 +49,11 @@ export interface AutomationPermissions {
   keyboardMouseControl: boolean;
 }
 
+export interface AppPolicy {
+  mode: "off" | "allowlist" | "denylist";
+  entries: string[];
+}
+
 export interface BinaryBrainConfig {
   enabled: boolean;
 }
@@ -67,6 +72,11 @@ export interface LearnedMacro {
   name: string;
   createdAt: number;
   events: RecordedInputEvent[];
+  command?: string;
+  runs?: number;
+  successes?: number;
+  failures?: number;
+  lastRunAt?: number;
 }
 
 const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
@@ -91,6 +101,7 @@ interface NovaState {
 
   providerConfig: ProviderConfig;
   permissions: AutomationPermissions;
+  appPolicy: AppPolicy;
   binaryBrain: BinaryBrainConfig;
   isSetupComplete: boolean;
   theme: "light" | "dark";
@@ -111,6 +122,8 @@ interface NovaState {
   clearPlan: () => void;
   saveProviderConfig: (config: ProviderConfig) => void;
   setPermission: (key: keyof AutomationPermissions, value: boolean) => void;
+  setAppPolicyMode: (mode: AppPolicy["mode"]) => void;
+  setAppPolicyEntries: (entries: string[]) => void;
   setBinaryBrainEnabled: (enabled: boolean) => void;
   resetSetup: () => void;
   toggleTheme: () => void;
@@ -119,6 +132,8 @@ interface NovaState {
   learnedMacros: LearnedMacro[];
   saveMacro: (macro: Omit<LearnedMacro, "id" | "createdAt">) => void;
   deleteMacro: (id: string) => void;
+  markWorkflowRun: (id: string) => void;
+  markWorkflowOutcome: (id: string, success: boolean) => void;
 }
 
 const DEFAULT_PERMISSIONS: AutomationPermissions = {
@@ -127,6 +142,7 @@ const DEFAULT_PERMISSIONS: AutomationPermissions = {
   browserControl: false,
   keyboardMouseControl: false,
 };
+const DEFAULT_APP_POLICY: AppPolicy = { mode: "off", entries: [] };
 
 export const useNovaStore = create<NovaState>()(
   persist(
@@ -143,6 +159,7 @@ export const useNovaStore = create<NovaState>()(
 
       providerConfig: DEFAULT_PROVIDER_CONFIG,
       permissions: DEFAULT_PERMISSIONS,
+      appPolicy: DEFAULT_APP_POLICY,
       binaryBrain: { enabled: true },
       isSetupComplete: false,
       theme: "light",
@@ -180,6 +197,10 @@ export const useNovaStore = create<NovaState>()(
       saveProviderConfig: (config) => set({ providerConfig: config, isSetupComplete: true }),
       setPermission: (key, value) =>
         set((s) => ({ permissions: { ...s.permissions, [key]: value } })),
+      setAppPolicyMode: (mode) =>
+        set((s) => ({ appPolicy: { ...s.appPolicy, mode } })),
+      setAppPolicyEntries: (entries) =>
+        set((s) => ({ appPolicy: { ...s.appPolicy, entries } })),
       setBinaryBrainEnabled: (enabled) =>
         set((s) => ({ binaryBrain: { ...s.binaryBrain, enabled } })),
       resetSetup: () => set({ isSetupComplete: false, providerConfig: DEFAULT_PROVIDER_CONFIG }),
@@ -189,17 +210,44 @@ export const useNovaStore = create<NovaState>()(
         set((s) => ({
           learnedMacros: [
             ...s.learnedMacros,
-            { ...macro, id: crypto.randomUUID(), createdAt: Date.now() },
+            {
+              ...macro,
+              id: crypto.randomUUID(),
+              createdAt: Date.now(),
+              runs: macro.runs ?? 0,
+              successes: macro.successes ?? 0,
+              failures: macro.failures ?? 0,
+              lastRunAt: macro.lastRunAt,
+            },
           ],
         })),
       deleteMacro: (id) =>
         set((s) => ({ learnedMacros: s.learnedMacros.filter((m) => m.id !== id) })),
+      markWorkflowRun: (id) =>
+        set((s) => ({
+          learnedMacros: s.learnedMacros.map((m) =>
+            m.id === id ? { ...m, runs: (m.runs ?? 0) + 1, lastRunAt: Date.now() } : m
+          ),
+        })),
+      markWorkflowOutcome: (id, success) =>
+        set((s) => ({
+          learnedMacros: s.learnedMacros.map((m) =>
+            m.id === id
+              ? {
+                  ...m,
+                  successes: (m.successes ?? 0) + (success ? 1 : 0),
+                  failures: (m.failures ?? 0) + (success ? 0 : 1),
+                }
+              : m
+          ),
+        })),
     }),
     {
       name: "nova-config",
       partialize: (state) => ({
         providerConfig: state.providerConfig,
         permissions: state.permissions,
+        appPolicy: state.appPolicy,
         binaryBrain: state.binaryBrain,
         isSetupComplete: state.isSetupComplete,
         theme: state.theme,

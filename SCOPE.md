@@ -558,6 +558,55 @@ OPENAI_API_KEY = "sk-..."
 | **Best for** | Deep reasoning, long autonomous sessions | Speed, scripting, Rust-native performance |
 | **Model switching** | `/model` | `/model` or `--model` flag |
 | **Session resume** | `/resume <name>` | `codex resume --last` |
+
+---
+
+## Cortex Nova Product Scope Additions (Approved)
+
+### 1. Reliability Layer
+- Add bounded retries with backoff for desktop actions.
+- Add post-action verification checks (focus/window/url heuristics).
+- Add cancellation and recovery handling for multi-step chains.
+
+### 2. Safer Automation
+- Introduce risk tiers for desktop actions.
+- Require explicit confirmation for high-risk actions (send/submit/secrets).
+- Add app allowlist/denylist controls under Permissions.
+
+### 3. Better Self-Learning
+- Track success/failure outcomes for learned patterns.
+- Learn from user corrections and prefer corrected paths.
+- Add lifecycle rules (promote reliable macros, decay stale ones).
+
+### 4. Memory + Knowledge Graph
+- Add typed relations (`person`, `tool`, `task`, `project`, `deadline`).
+- Weight concept edges by usage outcomes and recency.
+- Add graph explainability in UI (why a recall matched).
+
+### 5. Planner Quality
+- Add deterministic templates for common workflows (Telegram, Gmail, meetings).
+- Add missing-detail detection with one concise clarification question.
+- Add simulation mode (“plan only, do not execute”).
+
+### 6. UI Surface Expansion
+- Add Workflows page (save/run/edit/delete and reliability metadata).
+- Add execution timeline with step-level latency and verification state.
+- Add provider health page (latency/failure/token usage where available).
+
+### 7. Model Controls
+- Add per-task model routing (chat/planner/vision).
+- Add fallback provider chains.
+- Add quick model profiles (`Fast`, `Balanced`, `Accurate`).
+
+### 8. DevOps + QA
+- Structured local audit logs for action chains.
+- End-to-end smoke tests for top intents.
+- One-command dev doctor/recovery script for Vite/Tauri runtime issues.
+
+### 9. Product Extensions
+- Scheduled automations.
+- Workspace modes and context bundles.
+- Voice quality presets and local/remote tradeoff controls.
 | **Checkpoints** | `/rewind` (auto-created) | Git recommended |
 | **Plan before act** | Plan Mode (`[Plan Mode]` prefix) | Approval Mode = `suggest` |
 | **MCP servers** | `~/.claude/settings.json` | `~/.codex/config.toml` |

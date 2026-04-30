@@ -39,6 +39,21 @@ export interface BehaviorPattern {
   autoStored: boolean;
 }
 
+export type MemoryRelationType = "person" | "tool" | "task" | "project" | "deadline";
+
+export interface MemoryRelation {
+  type: MemoryRelationType;
+  value: string;
+}
+
+export interface RecallExplanation {
+  memoryId: string;
+  text: string;
+  score: number;
+  matchedTags: string[];
+  relations: MemoryRelation[];
+}
+
 type ConceptMap = Record<string, Record<string, number>>;
 
 interface UniversalStore {
@@ -127,6 +142,36 @@ function normalizeToken(word: string): string {
 
 function getTagAliases(tag: string): string[] {
   return TAG_ALIASES[tag] ?? [];
+}
+
+export function extractRelations(text: string): MemoryRelation[] {
+  const out: MemoryRelation[] = [];
+  const lower = text.toLowerCase();
+  const push = (type: MemoryRelationType, value: string) => {
+    if (!value.trim()) return;
+    out.push({ type, value: value.trim() });
+  };
+
+  const person = text.match(/\b(?:to|for|with)\s+([a-z0-9._-]{2,30})/i);
+  if (person) push("person", person[1]);
+
+  const deadline = text.match(/\b(?:by|before|on)\s+([a-z]+\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|\d{4}-\d{2}-\d{2})/i);
+  if (deadline) push("deadline", deadline[1]);
+
+  if (/\btelegram|gmail|youtube|chrome|spotify|slack|discord\b/i.test(lower)) {
+    const tool = (lower.match(/\b(telegram|gmail|youtube|chrome|spotify|slack|discord)\b/i) ?? [])[1];
+    if (tool) push("tool", tool);
+  }
+
+  if (/\bworkflow|macro|automation|task\b/i.test(lower)) {
+    const task = (text.match(/\b(?:workflow|macro|task)\s*:?(.+)$/i) ?? [])[1];
+    if (task) push("task", task);
+  }
+
+  const project = text.match(/\bproject[:\s]+([a-z0-9 _-]{2,40})/i);
+  if (project) push("project", project[1]);
+
+  return out.slice(0, 8);
 }
 
 export function extractTags(text: string): string[] {
@@ -309,6 +354,49 @@ export function recall(query: string, limit = 5): Memory[] {
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((x) => x.m);
+}
+
+export function explainRecall(query: string, limit = 5): RecallExplanation[] {
+  const store = loadUniversal();
+  if (!store.mem.length) return [];
+
+  const qTags = extractTags(query);
+  const expanded = new Map<string, number>();
+  const queryTokens = query.toLowerCase();
+
+  for (const tag of qTags) {
+    expanded.set(tag, 1.0);
+    for (const alias of getTagAliases(tag)) expanded.set(alias, Math.max(expanded.get(alias) ?? 0, 0.8));
+    const linked = store.map[tag] ?? {};
+    for (const [rel, w] of Object.entries(linked)) expanded.set(rel, Math.max(expanded.get(rel) ?? 0, Math.min(2.5, w * 0.25)));
+  }
+
+  return store.mem
+    .map((m) => {
+      let tagScore = 0;
+      let exactHits = 0;
+      const matchedTags: string[] = [];
+      for (const tag of m.tags) {
+        const s = expanded.get(tag) ?? 0;
+        if (s > 0) matchedTags.push(tag);
+        tagScore += s;
+        if (qTags.includes(tag)) exactHits += 1;
+      }
+      const ageDays = Math.max(0, (Date.now() - m.ts) / (1000 * 60 * 60 * 24));
+      const recencyBoost = Math.max(0.72, 1 - ageDays * 0.015);
+      const exactTextBoost = m.text.toLowerCase().includes(queryTokens) ? 1.35 : 1;
+      const score = (tagScore + exactHits * 0.7) * m.weight * recencyBoost * exactTextBoost;
+      return {
+        memoryId: m.id,
+        text: m.text,
+        score,
+        matchedTags: matchedTags.slice(0, 8),
+        relations: extractRelations(m.text),
+      };
+    })
+    .filter((x) => x.score > 0.05)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
 
 /** Delete memories matching a query. Returns count removed. */

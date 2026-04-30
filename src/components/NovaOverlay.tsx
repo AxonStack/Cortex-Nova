@@ -19,6 +19,7 @@ import {
 import type { ActionLogEntry, RecordedInputEvent } from "../store/novaStore";
 import { TaskPlanPanel } from "./TaskPlanPanel";
 import { getBinaryBrainStats, exportBinaryBrain, importBinaryBrain, resetBinaryBrain } from "../lib/binaryBrain";
+import { fetchOllamaModels } from "../lib/providerClient";
 
 interface NovaChatInterfaceProps {
   isHoldingSpace: boolean;
@@ -84,6 +85,7 @@ export function NovaChatInterface({
     status, transcript, messages, errorMessage,
     providerConfig, theme, toggleTheme,
     actionLog, sessionStart, activePlan, permissions, setPermission, binaryBrain, setBinaryBrainEnabled,
+    saveProviderConfig,
     learnedMacros, saveMacro, deleteMacro,
   } = useNovaStore();
 
@@ -103,12 +105,24 @@ export function NovaChatInterface({
 
   // Active memory tab
   const [memTab, setMemTab] = useState<"universal" | "session" | "learned">("session");
-  const [sidebarPage, setSidebarPage] = useState<"home" | "permissions" | "brain">("home");
+  const [sidebarPage, setSidebarPage] = useState<"home" | "model" | "permissions" | "brain">("home");
+  const [modelProvider, setModelProvider] = useState(providerConfig.provider);
+  const [ollamaUrlDraft, setOllamaUrlDraft] = useState(providerConfig.ollamaUrl || "http://localhost:11434");
+  const [ollamaModelDraft, setOllamaModelDraft] = useState(providerConfig.ollamaModel || "");
+  const [ollamaInstalled, setOllamaInstalled] = useState<string[]>([]);
+  const [modelMsg, setModelMsg] = useState<string>("");
 
   // Learning mode — when ON, polls input events every 15 s and auto-saves named segments
   const [learningMode, setLearningMode] = useState(false);
 
   const uptime = useUptime(sessionStart);
+  const permissionItems = ([
+    { key: "desktopAutomation", label: "Desktop Automation", detail: "Master switch for all OS-control tasks." },
+    { key: "appControl", label: "App Control", detail: "Allows launching and closing desktop apps." },
+    { key: "browserControl", label: "Browser Control", detail: "Allows opening URLs and web navigation flows." },
+    { key: "keyboardMouseControl", label: "Keyboard + Mouse", detail: "Allows typing, shortcuts, and pointer clicks." },
+  ] as const);
+  const grantedPermCount = permissionItems.filter((item) => permissions[item.key]).length;
 
   useEffect(() => {
     setUniversalMems(getAllMemories().slice(0, 5));
@@ -121,6 +135,43 @@ export function NovaChatInterface({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    setModelProvider(providerConfig.provider);
+    setOllamaUrlDraft(providerConfig.ollamaUrl || "http://localhost:11434");
+    setOllamaModelDraft(providerConfig.ollamaModel || "");
+  }, [providerConfig]);
+
+  async function refreshOllamaModels() {
+    const models = await fetchOllamaModels(ollamaUrlDraft.trim() || "http://localhost:11434");
+    setOllamaInstalled(models);
+    if (!ollamaModelDraft && models.length > 0) setOllamaModelDraft(models[0]);
+  }
+
+  function applyModelConfig() {
+    const prev = providerConfig;
+    if (modelProvider === "ollama") {
+      if (!ollamaModelDraft.trim()) {
+        setModelMsg("Set an Ollama model before applying.");
+        return;
+      }
+      saveProviderConfig({
+        provider: "ollama",
+        apiKey: "",
+        ollamaUrl: ollamaUrlDraft.trim() || "http://localhost:11434",
+        ollamaModel: ollamaModelDraft.trim(),
+      });
+      setModelMsg(`Switched to Ollama (${ollamaModelDraft.trim()}).`);
+      return;
+    }
+    saveProviderConfig({
+      provider: modelProvider,
+      apiKey: prev.apiKey,
+      ollamaUrl: prev.ollamaUrl,
+      ollamaModel: prev.ollamaModel,
+    });
+    setModelMsg(`Switched provider to ${modelProvider}.`);
+  }
 
   function readFileAsDataUrl(file: File): Promise<Attachment> {
     return new Promise((resolve, reject) => {
@@ -354,6 +405,7 @@ export function NovaChatInterface({
           <nav className="rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-2 flex flex-col gap-1.5 shrink-0 w-[58px]">
             {([
               { id: "home", label: "Home" },
+              { id: "model", label: "Model" },
               { id: "permissions", label: "Perms" },
               { id: "brain", label: "Brain" },
             ] as const).map((page) => (
@@ -372,17 +424,99 @@ export function NovaChatInterface({
             ))}
           </nav>
 
+          {/* Model page */}
+          {sidebarPage === "model" && (
+            <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
+              <div className="rounded-[12px] border border-black/60 dark:border-white/25 bg-gradient-to-br from-[#f4f4f4] to-[#dcdcdc] dark:from-[#292929] dark:to-[#191919] px-3.5 py-3">
+                <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Model Control</div>
+                <div className="text-[13px] text-black/80 dark:text-white/65 mt-1">Switch provider and model without leaving the main workspace.</div>
+              </div>
+
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3">
+                <div className="text-[10px] tracking-[0.2em] uppercase text-black/45 dark:text-white/35 mb-2">Provider</div>
+                <select
+                  value={modelProvider}
+                  onChange={(e) => setModelProvider(e.target.value as typeof modelProvider)}
+                  className="w-full rounded-[10px] border border-black/30 dark:border-white/20 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-[12px] text-black dark:text-white"
+                >
+                  <option value="ollama">Ollama (local)</option>
+                  <option value="openai">OpenAI API</option>
+                  <option value="anthropic">Anthropic API</option>
+                  <option value="claude_cli">Claude CLI</option>
+                  <option value="codex_cli">Codex CLI</option>
+                </select>
+              </div>
+
+              {modelProvider === "ollama" && (
+                <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3 flex flex-col gap-2">
+                  <div className="text-[10px] tracking-[0.2em] uppercase text-black/45 dark:text-white/35">Ollama Runtime</div>
+                  <input
+                    value={ollamaUrlDraft}
+                    onChange={(e) => setOllamaUrlDraft(e.target.value)}
+                    placeholder="http://localhost:11434"
+                    className="w-full rounded-[10px] border border-black/30 dark:border-white/20 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-[12px] text-black dark:text-white"
+                  />
+                  <div className="flex gap-2">
+                    <input
+                      value={ollamaModelDraft}
+                      onChange={(e) => setOllamaModelDraft(e.target.value)}
+                      placeholder="Model name (e.g. llama3.2)"
+                      className="flex-1 rounded-[10px] border border-black/30 dark:border-white/20 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-[12px] text-black dark:text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={refreshOllamaModels}
+                      className="px-3 py-2 rounded-[10px] border border-black/35 dark:border-white/20 text-[10px] tracking-widest uppercase text-black/70 dark:text-white/55 hover:border-black dark:hover:border-white/50"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {ollamaInstalled.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {ollamaInstalled.slice(0, 10).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setOllamaModelDraft(m)}
+                          className={`text-[10px] px-2 py-1 rounded-full border ${
+                            ollamaModelDraft === m
+                              ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
+                              : "border-black/20 dark:border-white/20 text-black/60 dark:text-white/45"
+                          }`}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={applyModelConfig}
+                  className="px-3 py-2 rounded-[10px] border border-black dark:border-white text-[10px] tracking-widest uppercase bg-black text-white dark:bg-white dark:text-black"
+                >
+                  Apply
+                </button>
+                <div className="text-[11px] text-black/55 dark:text-white/45">{modelMsg || `Current: ${providerName}`}</div>
+              </div>
+            </div>
+          )}
+
           {/* Permissions page */}
           {sidebarPage === "permissions" && (
             <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-3 overflow-y-auto">
-              <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Access Controls</div>
-              {([
-                { key: "desktopAutomation", label: "Desktop Automation", detail: "Master switch for OS control tasks" },
-                { key: "appControl", label: "Open/Close Apps", detail: "Allow launching and closing apps" },
-                { key: "browserControl", label: "Browser Navigation", detail: "Allow opening URLs and web flows" },
-                { key: "keyboardMouseControl", label: "Keyboard/Mouse", detail: "Allow typing, shortcuts, and clicks" },
-              ] as const).map((item) => (
-                <label key={item.key} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 flex items-start gap-2.5 cursor-pointer">
+              <div className="rounded-[12px] border border-black/60 dark:border-white/25 bg-gradient-to-r from-[#f2f2f2] via-[#e7e7e7] to-[#d8d8d8] dark:from-[#2b2b2b] dark:via-[#232323] dark:to-[#1a1a1a] px-3.5 py-3">
+                <div className="text-[10px] tracking-[0.28em] uppercase text-black/45 dark:text-white/35">Access Controls</div>
+                <div className="mt-2 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all" style={{ width: `${(grantedPermCount / permissionItems.length) * 100}%` }} />
+                </div>
+                <div className="mt-1 text-[11px] text-black/65 dark:text-white/55">{grantedPermCount}/{permissionItems.length} permissions enabled</div>
+              </div>
+              {permissionItems.map((item) => (
+                <label key={item.key} className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3 flex items-start gap-2.5 cursor-pointer shadow-[0_3px_0_#00000010]">
                   <input
                     type="checkbox"
                     checked={permissions[item.key]}
@@ -390,7 +524,12 @@ export function NovaChatInterface({
                     className="mt-0.5"
                   />
                   <div className="min-w-0">
-                    <div className="text-[12px] text-black/80 dark:text-white/65">{item.label}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-[12px] text-black/85 dark:text-white/70">{item.label}</div>
+                      <span className={`text-[8px] px-1.5 py-0.5 rounded-full border ${permissions[item.key] ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-300" : "border-black/20 dark:border-white/20 text-black/35 dark:text-white/25"}`}>
+                        {permissions[item.key] ? "ON" : "OFF"}
+                      </span>
+                    </div>
                     <div className="text-[10px] text-black/45 dark:text-white/35 mt-0.5">{item.detail}</div>
                   </div>
                 </label>
@@ -401,11 +540,20 @@ export function NovaChatInterface({
           {/* Brain page */}
           {sidebarPage === "brain" && (
             <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-4 overflow-y-auto">
+              <div className="rounded-[12px] border border-black/60 dark:border-white/25 bg-gradient-to-br from-[#f7f7f7] via-[#ececec] to-[#d7d7d7] dark:from-[#2f2f2f] dark:via-[#242424] dark:to-[#171717] px-3.5 py-3">
+                <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Neural Workspace</div>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className={`text-[9px] px-2 py-0.5 rounded-full border ${binaryBrain.enabled ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-300" : "border-black/20 dark:border-white/20 text-black/35 dark:text-white/25"}`}>
+                    Binary Brain {binaryBrain.enabled ? "ON" : "OFF"}
+                  </span>
+                  <span className={`text-[9px] px-2 py-0.5 rounded-full border ${learningMode ? "border-blue-500/40 text-blue-700 dark:text-blue-300" : "border-black/20 dark:border-white/20 text-black/35 dark:text-white/25"}`}>
+                    Macro Learning {learningMode ? "ON" : "OFF"}
+                  </span>
+                </div>
+              </div>
 
-              {/* Binary Coprocessor */}
-              <div className="flex flex-col gap-2">
-                <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Binary Coprocessor</div>
-                <label className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5 flex items-start gap-2.5 cursor-pointer">
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3">
+                <label className="flex items-start gap-2.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={binaryBrain.enabled}
@@ -417,34 +565,37 @@ export function NovaChatInterface({
                     <div className="text-[10px] text-black/45 dark:text-white/35 mt-0.5">Learns local intent patterns and adds planner hints.</div>
                   </div>
                 </label>
-                <div className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2.5">
-                  <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
-                  <div className="text-[22px] font-bold text-black dark:text-[#e8e8e8] tabular-nums mt-0.5">{brainStats.trainedSamples}</div>
-                  <div className="mt-2 text-[9px] text-black/45 dark:text-white/35 uppercase tracking-widest">Recent intents</div>
-                  <div className="mt-1 space-y-1">
-                    {brainStats.topIntents.slice(0, 4).map((intent) => (
-                      <div key={intent} className="text-[11px] text-black/70 dark:text-white/55 line-clamp-1">{intent}</div>
-                    ))}
-                    {brainStats.topIntents.length === 0 && (
-                      <div className="text-[11px] text-black/45 dark:text-white/35">No training data yet</div>
-                    )}
-                  </div>
+              </div>
+
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-gradient-to-r from-[#f0f0f0] to-[#dddddd] dark:from-[#262626] dark:to-[#1c1c1c] px-3 py-3">
+                <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
+                <div className="text-[26px] font-bold text-black dark:text-[#e8e8e8] tabular-nums mt-0.5">{brainStats.trainedSamples}</div>
+                <div className="mt-2 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-cyan-500 via-sky-500 to-indigo-500" style={{ width: `${Math.min(100, brainStats.trainedSamples * 3)}%` }} />
                 </div>
-                <div className="flex gap-2">
-                  <button type="button" onClick={handleExportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Export</button>
-                  <button type="button" onClick={handleImportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Import</button>
-                  <button type="button" onClick={handleResetBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-red-500/40 text-red-700 dark:text-red-300 hover:border-red-600/60 transition-colors">Reset</button>
+                <div className="mt-2 text-[9px] text-black/45 dark:text-white/35 uppercase tracking-widest">Recent intents</div>
+                <div className="mt-1 space-y-1">
+                  {brainStats.topIntents.slice(0, 4).map((intent) => (
+                    <div key={intent} className="text-[11px] text-black/70 dark:text-white/55 line-clamp-1">{intent}</div>
+                  ))}
+                  {brainStats.topIntents.length === 0 && (
+                    <div className="text-[11px] text-black/45 dark:text-white/35">No training data yet</div>
+                  )}
                 </div>
               </div>
 
-              {/* Divider */}
+              <div className="flex gap-2">
+                <button type="button" onClick={handleExportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Export</button>
+                <button type="button" onClick={handleImportBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-black/60 dark:text-white/50 hover:border-black dark:hover:border-white/50 transition-colors">Import</button>
+                <button type="button" onClick={handleResetBrain} className="flex-1 text-[10px] tracking-widest uppercase px-2 py-2 rounded-[10px] border border-red-500/40 text-red-700 dark:text-red-300 hover:border-red-600/60 transition-colors">Reset</button>
+              </div>
+
               <div className="border-t border-black/10 dark:border-white/10" />
 
               {/* Macro Learning */}
               <div className="flex flex-col gap-2">
                 <div className="text-[10px] tracking-[0.25em] uppercase text-black/45 dark:text-white/35">Macro Learning</div>
 
-                {/* Single toggle */}
                 <button
                   type="button"
                   role="switch"
@@ -452,22 +603,21 @@ export function NovaChatInterface({
                   onClick={() => setLearningMode((v) => !v)}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-[10px] border transition-colors ${
                     learningMode
-                      ? "border-green-600/60 bg-green-500/10"
+                      ? "border-blue-600/60 bg-blue-500/10"
                       : "border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424]"
                   }`}
                 >
                   <div className="text-left">
-                    <div className={`text-[11px] font-medium ${learningMode ? "text-green-700 dark:text-green-300" : "text-black/80 dark:text-white/65"}`}>
+                    <div className={`text-[11px] font-medium ${learningMode ? "text-blue-700 dark:text-blue-300" : "text-black/80 dark:text-white/65"}`}>
                       Learning Mode
                     </div>
                     <div className="text-[9px] text-black/45 dark:text-white/35 mt-0.5">
                       {learningMode ? "Watching your keyboard & mouse…" : "Tap to start learning your workflows"}
                     </div>
                   </div>
-                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${learningMode ? "bg-green-500 animate-pulse" : "bg-black/25 dark:bg-white/25"}`} />
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${learningMode ? "bg-blue-500 animate-pulse" : "bg-black/25 dark:bg-white/25"}`} />
                 </button>
 
-                {/* Saved macros */}
                 {learnedMacros.length > 0 && (
                   <div className="flex flex-col gap-1.5 mt-1">
                     <div className="text-[9px] tracking-widest uppercase text-black/30 dark:text-white/25">{learnedMacros.length} learned</div>

@@ -111,6 +111,12 @@ export function NovaChatInterface({
   const [ollamaModelDraft, setOllamaModelDraft] = useState(providerConfig.ollamaModel || "");
   const [ollamaInstalled, setOllamaInstalled] = useState<string[]>([]);
   const [modelMsg, setModelMsg] = useState<string>("");
+  const [brainModal, setBrainModal] = useState<{
+    mode: "notice" | "import" | "confirm_reset";
+    title: string;
+    message: string;
+    input: string;
+  } | null>(null);
 
   // Learning mode — when ON, polls input events every 15 s and auto-saves named segments
   const [learningMode, setLearningMode] = useState(false);
@@ -271,22 +277,62 @@ export function NovaChatInterface({
   function handleExportBrain() {
     const payload = exportBinaryBrain();
     navigator.clipboard?.writeText(payload).catch(() => {});
-    window.alert("Binary brain exported. It has been copied to clipboard.");
+    setBrainModal({
+      mode: "notice",
+      title: "Brain Exported",
+      message: "Binary brain payload copied to clipboard.",
+      input: "",
+    });
   }
 
   function handleImportBrain() {
-    const encoded = window.prompt("Paste binary brain payload:");
-    if (!encoded) return;
+    setBrainModal({
+      mode: "import",
+      title: "Import Binary Brain",
+      message: "Paste your encoded payload below.",
+      input: "",
+    });
+  }
+
+  function confirmImportBrain() {
+    if (!brainModal || brainModal.mode !== "import") return;
+    const encoded = brainModal.input.trim();
+    if (!encoded) {
+      setBrainModal({
+        mode: "notice",
+        title: "Import Failed",
+        message: "No payload provided.",
+        input: "",
+      });
+      return;
+    }
     const ok = importBinaryBrain(encoded);
-    window.alert(ok ? "Binary brain imported." : "Import failed. Invalid payload.");
+    setBrainModal({
+      mode: "notice",
+      title: ok ? "Import Complete" : "Import Failed",
+      message: ok ? "Binary brain imported successfully." : "Payload is invalid.",
+      input: "",
+    });
     if (ok) setInputText((v) => v);
   }
 
   function handleResetBrain() {
-    const ok = window.confirm("Reset local binary brain training data?");
-    if (!ok) return;
+    setBrainModal({
+      mode: "confirm_reset",
+      title: "Reset Binary Brain",
+      message: "This clears local training stats and learned token/action weights.",
+      input: "",
+    });
+  }
+
+  function confirmResetBrain() {
     resetBinaryBrain();
-    window.alert("Binary brain reset.");
+    setBrainModal({
+      mode: "notice",
+      title: "Brain Reset",
+      message: "Local binary brain training data has been reset.",
+      input: "",
+    });
     setInputText((v) => v);
   }
 
@@ -540,13 +586,30 @@ export function NovaChatInterface({
           {/* Brain page */}
           {sidebarPage === "brain" && (
             <div className="flex-1 rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-4 flex flex-col gap-4 overflow-y-auto">
-              <div className="rounded-[12px] border border-black/60 dark:border-white/25 bg-gradient-to-br from-[#f7f7f7] via-[#ececec] to-[#d7d7d7] dark:from-[#2f2f2f] dark:via-[#242424] dark:to-[#171717] px-3.5 py-3">
-                <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Neural Workspace</div>
+              <div className="relative rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-4 py-4 overflow-hidden">
+                <div className="absolute inset-0 opacity-[0.18] dark:opacity-[0.1]" style={{ backgroundImage: "radial-gradient(circle at 1px 1px, currentColor 1px, transparent 0)", backgroundSize: "14px 14px" }} />
+                <div className="relative flex items-center gap-4">
+                  <div className="relative w-16 h-16 shrink-0 rounded-full border-2 border-black dark:border-white/70">
+                    <div className="absolute inset-[10px] rounded-full border border-black/55 dark:border-white/45" />
+                    <div className="absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 bg-black/40 dark:bg-white/35" />
+                    <div className="absolute top-1/2 left-0 right-0 h-px -translate-y-1/2 bg-black/40 dark:bg-white/35" />
+                    <div className="absolute left-[22%] top-[22%] w-1.5 h-1.5 rounded-full bg-black/70 dark:bg-white/70" />
+                    <div className="absolute right-[22%] bottom-[22%] w-1.5 h-1.5 rounded-full bg-black/70 dark:bg-white/70" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] tracking-[0.3em] uppercase text-black/45 dark:text-white/35">Brain Console</div>
+                    <div className="text-[14px] text-black/80 dark:text-white/70 mt-0.5">Local learning, memory imprinting, and workflow adaptation.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3.5 py-3">
+                <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Learning Status</div>
                 <div className="flex items-center gap-2 mt-2">
-                  <span className={`text-[9px] px-2 py-0.5 rounded-full border ${binaryBrain.enabled ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-300" : "border-black/20 dark:border-white/20 text-black/35 dark:text-white/25"}`}>
+                  <span className={`text-[9px] px-2 py-0.5 rounded-full border ${binaryBrain.enabled ? "border-black dark:border-white text-black dark:text-white" : "border-black/20 dark:border-white/20 text-black/35 dark:text-white/25"}`}>
                     Binary Brain {binaryBrain.enabled ? "ON" : "OFF"}
                   </span>
-                  <span className={`text-[9px] px-2 py-0.5 rounded-full border ${learningMode ? "border-blue-500/40 text-blue-700 dark:text-blue-300" : "border-black/20 dark:border-white/20 text-black/35 dark:text-white/25"}`}>
+                  <span className={`text-[9px] px-2 py-0.5 rounded-full border ${learningMode ? "border-black dark:border-white text-black dark:text-white" : "border-black/20 dark:border-white/20 text-black/35 dark:text-white/25"}`}>
                     Macro Learning {learningMode ? "ON" : "OFF"}
                   </span>
                 </div>
@@ -567,11 +630,11 @@ export function NovaChatInterface({
                 </label>
               </div>
 
-              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-gradient-to-r from-[#f0f0f0] to-[#dddddd] dark:from-[#262626] dark:to-[#1c1c1c] px-3 py-3">
+              <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-3">
                 <div className="text-[9px] tracking-widest uppercase text-black/35 dark:text-white/30">Trained samples</div>
                 <div className="text-[26px] font-bold text-black dark:text-[#e8e8e8] tabular-nums mt-0.5">{brainStats.trainedSamples}</div>
                 <div className="mt-2 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-cyan-500 via-sky-500 to-indigo-500" style={{ width: `${Math.min(100, brainStats.trainedSamples * 3)}%` }} />
+                  <div className="h-full bg-black/60 dark:bg-white/60" style={{ width: `${Math.min(100, brainStats.trainedSamples * 3)}%` }} />
                 </div>
                 <div className="mt-2 text-[9px] text-black/45 dark:text-white/35 uppercase tracking-widest">Recent intents</div>
                 <div className="mt-1 space-y-1">
@@ -603,19 +666,19 @@ export function NovaChatInterface({
                   onClick={() => setLearningMode((v) => !v)}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-[10px] border transition-colors ${
                     learningMode
-                      ? "border-blue-600/60 bg-blue-500/10"
+                      ? "border-black dark:border-white bg-black/5 dark:bg-white/10"
                       : "border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424]"
                   }`}
                 >
                   <div className="text-left">
-                    <div className={`text-[11px] font-medium ${learningMode ? "text-blue-700 dark:text-blue-300" : "text-black/80 dark:text-white/65"}`}>
+                    <div className={`text-[11px] font-medium ${learningMode ? "text-black dark:text-white" : "text-black/80 dark:text-white/65"}`}>
                       Learning Mode
                     </div>
                     <div className="text-[9px] text-black/45 dark:text-white/35 mt-0.5">
                       {learningMode ? "Watching your keyboard & mouse…" : "Tap to start learning your workflows"}
                     </div>
                   </div>
-                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${learningMode ? "bg-blue-500 animate-pulse" : "bg-black/25 dark:bg-white/25"}`} />
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${learningMode ? "bg-black dark:bg-white animate-pulse" : "bg-black/25 dark:bg-white/25"}`} />
                 </button>
 
                 {learnedMacros.length > 0 && (
@@ -1035,6 +1098,66 @@ export function NovaChatInterface({
           </div>
 
           </div>
+          )}
+
+          {brainModal && (
+            <div className="absolute inset-0 z-40 bg-black/40 backdrop-blur-[2px] flex items-center justify-center p-4">
+              <div className="w-[min(520px,100%)] rounded-[16px] border-2 border-black dark:border-[#3a3a3a] bg-[#dfdfdf] dark:bg-[#171717] shadow-[0_10px_0_#000] dark:shadow-[0_10px_0_#2a2a2a] p-2">
+                <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] p-4">
+                <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Brain Action</div>
+                <div className="text-[16px] text-black dark:text-white mt-1">{brainModal.title}</div>
+                <div className="text-[12px] text-black/65 dark:text-white/55 mt-1">{brainModal.message}</div>
+
+                {brainModal.mode === "import" && (
+                  <textarea
+                    value={brainModal.input}
+                    onChange={(e) => setBrainModal({ ...brainModal, input: e.target.value })}
+                    placeholder="Paste encoded payload..."
+                    className="mt-3 w-full h-28 rounded-[10px] border border-black/25 dark:border-white/20 bg-white dark:bg-[#101010] px-3 py-2 text-[12px] text-black dark:text-white outline-none"
+                  />
+                )}
+
+                <div className="mt-4 flex items-center justify-end gap-2">
+                  {brainModal.mode !== "notice" && (
+                    <button
+                      type="button"
+                      onClick={() => setBrainModal(null)}
+                      className="px-3 py-2 rounded-[10px] border border-black/30 dark:border-white/25 text-[10px] tracking-widest uppercase text-black/70 dark:text-white/55"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  {brainModal.mode === "import" && (
+                    <button
+                      type="button"
+                      onClick={confirmImportBrain}
+                      className="px-3 py-2 rounded-[10px] border border-black dark:border-white text-[10px] tracking-widest uppercase bg-black text-white dark:bg-white dark:text-black"
+                    >
+                      Import
+                    </button>
+                  )}
+                  {brainModal.mode === "confirm_reset" && (
+                    <button
+                      type="button"
+                      onClick={confirmResetBrain}
+                      className="px-3 py-2 rounded-[10px] border border-red-500/50 text-[10px] tracking-widest uppercase text-red-700 dark:text-red-300"
+                    >
+                      Reset
+                    </button>
+                  )}
+                  {brainModal.mode === "notice" && (
+                    <button
+                      type="button"
+                      onClick={() => setBrainModal(null)}
+                      className="px-3 py-2 rounded-[10px] border border-black dark:border-white text-[10px] tracking-widest uppercase bg-black text-white dark:bg-white dark:text-black"
+                    >
+                      Close
+                    </button>
+                  )}
+                </div>
+                </div>
+              </div>
+            </div>
           )}
 
           </div>

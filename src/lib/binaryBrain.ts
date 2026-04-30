@@ -5,6 +5,7 @@ interface BinaryBrainState {
   tokenWeights: Record<string, number>;
   actionScores: Record<BrainActionKind, number>;
   recentIntents: string[];
+  lastTrainedAt?: number;
 }
 
 const STORAGE_KEY = "nova-binary-brain-v1";
@@ -86,19 +87,34 @@ function tokenize(text: string): string[] {
     .slice(0, 24);
 }
 
+function decayWeights(src: Record<string, number>, factor: number): Record<string, number> {
+  const out: Record<string, number> = { ...src };
+  for (const key of Object.keys(out)) {
+    out[key] = out[key] * factor;
+    if (out[key] < 0.05) delete out[key];
+  }
+  return out;
+}
+
 export function trainBinaryBrain(query: string, executedLabels: string[]) {
   const state = readState();
+  // Gentle decay keeps learning adaptive instead of permanently biased to old behavior.
+  state.tokenWeights = decayWeights(state.tokenWeights, 0.992);
+  state.actionScores = decayWeights(state.actionScores, 0.996);
+
   const kinds = inferKinds(`${query} ${executedLabels.join(" ")}`);
   const tokens = tokenize(query);
+  const confidenceBoost = Math.min(1.8, 1 + executedLabels.length * 0.08);
 
   for (const token of tokens) {
-    state.tokenWeights[token] = (state.tokenWeights[token] ?? 0) + 1;
+    state.tokenWeights[token] = (state.tokenWeights[token] ?? 0) + confidenceBoost;
   }
   for (const kind of kinds) {
-    state.actionScores[kind] = (state.actionScores[kind] ?? 0) + 1;
+    state.actionScores[kind] = (state.actionScores[kind] ?? 0) + confidenceBoost;
   }
 
   state.trainedSamples += 1;
+  state.lastTrainedAt = Date.now();
   state.recentIntents = [query, ...state.recentIntents].slice(0, RECENT_LIMIT);
   writeState(state);
 }
@@ -113,11 +129,13 @@ export function getBinaryBrainContext(): string {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
     .map(([k]) => k);
+  const topRecent = state.recentIntents.slice(0, 3).join(" | ");
 
   return [
     `[Binary brain] samples=${state.trainedSamples}`,
     sortedKinds.length ? `top_action_patterns=${sortedKinds.join(",")}` : "",
     topTokens.length ? `top_tokens=${topTokens.join(",")}` : "",
+    topRecent ? `recent_successful_intents=${topRecent}` : "",
   ]
     .filter(Boolean)
     .join("\n");

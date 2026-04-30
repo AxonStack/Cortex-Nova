@@ -67,12 +67,16 @@ function getChatHistory(query: string): ChatHistoryEntry[] {
 
 function decorateQueryWithMemory(query: string): string {
   const binaryEnabled = useNovaStore.getState().binaryBrain.enabled;
+  const learnedMacros = useNovaStore.getState().learnedMacros.slice(-3);
   const hits = recall(query, 3);
   const ctx = hits.length
     ? `[Memory context]\n${hits.map((m) => `- ${m.text}`).join("\n")}\n\n[Query]\n`
     : "";
+  const macroCtx = learnedMacros.length
+    ? `[Learned macros]\n${learnedMacros.map((m) => `- ${m.name}`).join("\n")}\n\n`
+    : "";
   const binaryCtx = binaryEnabled ? `\n\n${getBinaryBrainContext()}\n\n` : "\n\n";
-  return `${ctx}${binaryCtx}${query}`;
+  return `${ctx}${macroCtx}${binaryCtx}${query}`;
 }
 
 function buildCliPrompt(systemPrompt: string, query: string): string {

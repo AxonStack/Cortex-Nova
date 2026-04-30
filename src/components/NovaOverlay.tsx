@@ -13,6 +13,7 @@ import { StatusIndicator } from "./StatusIndicator";
 import {
   getAllMemories, memoryCount, getTempMemory,
   getRecentSearches, getBehaviorPatterns,
+  remember,
   type Memory, type TempEntry, type BehaviorPattern,
 } from "../lib/memory";
 import type { ActionLogEntry, RecordedInputEvent } from "../store/novaStore";
@@ -263,7 +264,9 @@ export function NovaChatInterface({
       try {
         const events = await invoke<RecordedInputEvent[]>("stop_input_recording");
         if (events.length > 3) {
-          saveMacro({ name: autoNameEvents(events), events });
+          const name = autoNameEvents(events);
+          saveMacro({ name, events });
+          remember(`Learned macro: ${name} (${events.length} events)`, "auto", 0.65);
         }
         await invoke("start_input_recording");
       } catch {

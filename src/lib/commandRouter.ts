@@ -132,6 +132,63 @@ function buildLiveScoreUrl(query: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(`${query} live score`)}`;
 }
 
+function cleanTelegramField(text: string): string {
+  return text.trim().replace(/^["']|["']$/g, "").trim();
+}
+
+function buildTelegramMessageChain(contactRaw: string, messageRaw: string): CommandResult {
+  const contact = cleanTelegramField(contactRaw);
+  const message = cleanTelegramField(messageRaw);
+  if (!contact || !message) {
+    return { type: "os_action", message: "I need both a Telegram contact and a message." };
+  }
+  return {
+    type: "command_chain",
+    steps: [
+      { type: "desktop_open_app", app: "telegram", label: "Opening Telegram" },
+      { type: "desktop_focus_window", name: "telegram", label: "Focusing Telegram" },
+      { type: "desktop_press_key", keys: "ctrl+k", label: "Opening chat search" },
+      { type: "desktop_type_text", text: contact, label: `Searching for ${contact}` },
+      { type: "desktop_press_key", keys: "Return", label: "Selecting contact" },
+      { type: "desktop_type_text", text: message, label: `Typing message to ${contact}` },
+      { type: "desktop_press_key", keys: "Return", label: "Sending Telegram message" },
+    ] as CommandResult[],
+  };
+}
+
+function parseTelegramIntent(input: string): CommandResult | null {
+  const text = input.trim();
+  const lower = text.toLowerCase();
+  const mentionsTelegram = /\btelegram\b/.test(lower);
+  const looksLikeMessageAction = /\b(message|msg|text|send)\b/.test(lower);
+  if (!mentionsTelegram && !lower.startsWith("message ")) return null;
+  if (!looksLikeMessageAction) return null;
+
+  // Prefer explicit quoted content when present.
+  const quoted = text.match(/["']([^"']+)["']/);
+  const quotedMessage = quoted?.[1]?.trim();
+
+  const contactFromTo = text.match(/\bto\s+(.+?)(?=\s+(?:saying|with|that)\b|["']|$)/i)?.[1]?.trim();
+  const contactFromMessage = text.match(/^message\s+(.+?)(?=\s+(?:saying|with|that)\b|["']|$)/i)?.[1]?.trim();
+  const contact = cleanTelegramField(contactFromTo ?? contactFromMessage ?? "");
+
+  let message = quotedMessage ?? "";
+  if (!message) {
+    const tail = text.match(/\b(?:saying|with|that)\s+(.+)$/i)?.[1]?.trim();
+    if (tail) message = tail;
+  }
+
+  // "send telegram message to kirkster hey lode"
+  if (!message && contactFromTo) {
+    const loose = text.match(/\bto\s+.+?\s+(.+)$/i)?.[1]?.trim();
+    if (loose && !/\btelegram\b/i.test(loose)) message = loose;
+  }
+
+  message = cleanTelegramField(message);
+  if (!contact || !message) return null;
+  return buildTelegramMessageChain(contact, message);
+}
+
 // ── Command patterns ──────────────────────────────────────────────────────────
 
 const OS_PATTERNS: Array<{
@@ -398,6 +455,9 @@ const OS_PATTERNS: Array<{
 // ── Router ───────────────────────────────────────────────────────────────────
 
 async function routeSingleCommand(trimmed: string): Promise<CommandResult> {
+  const telegramIntent = parseTelegramIntent(trimmed);
+  if (telegramIntent) return telegramIntent;
+
   for (const { pattern, handler } of OS_PATTERNS) {
     const match = trimmed.match(pattern);
     if (match) return handler(match);

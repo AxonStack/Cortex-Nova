@@ -72,6 +72,17 @@ const STOP = new Set([
   "make","made","tell","told","go","going","come","came","me","some","any",
 ]);
 
+const TAG_ALIASES: Record<string, string[]> = {
+  telegram: ["tg", "chat", "message", "messaging"],
+  gmail: ["email", "mail", "inbox"],
+  youtube: ["yt", "video", "music"],
+  chrome: ["browser", "web"],
+  firefox: ["browser", "web"],
+  spotify: ["music", "audio"],
+  openai: ["ai", "gpt", "llm"],
+  codex: ["ai", "assistant"],
+};
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 function loadUniversal(): UniversalStore {
@@ -103,20 +114,51 @@ function saveTemp(store: TempStore): void {
   try { sessionStorage.setItem(TEMP_KEY, JSON.stringify(store)); } catch { /* full */ }
 }
 
+function normalizeToken(word: string): string {
+  let w = word.toLowerCase().trim();
+  if (w.length <= 3) return w;
+  if (w.endsWith("ies") && w.length > 4) w = `${w.slice(0, -3)}y`;
+  else if (w.endsWith("ing") && w.length > 5) w = w.slice(0, -3);
+  else if (w.endsWith("ed") && w.length > 4) w = w.slice(0, -2);
+  else if (w.endsWith("es") && w.length > 4) w = w.slice(0, -2);
+  else if (w.endsWith("s") && w.length > 4) w = w.slice(0, -1);
+  return w;
+}
+
+function getTagAliases(tag: string): string[] {
+  return TAG_ALIASES[tag] ?? [];
+}
+
 export function extractTags(text: string): string[] {
-  const tokens = text
+  const base = text
     .toLowerCase()
     .replace(/[^a-z0-9 ]/g, " ")
     .split(/\s+/)
+    .map((w) => normalizeToken(w))
     .filter((w) => w.length > 2 && !STOP.has(w));
-  return [...new Set(tokens)].slice(0, 12);
+
+  const expanded: string[] = [];
+  for (const tag of base) {
+    expanded.push(tag);
+    expanded.push(...getTagAliases(tag));
+  }
+  return [...new Set(expanded)].slice(0, 18);
 }
 
-function updateConceptMap(map: ConceptMap, tags: string[]): void {
+function edgeWeightForTag(tag: string): number {
+  if (tag.length >= 9) return 1.2;
+  if (tag.length <= 3) return 0.6;
+  return 1;
+}
+
+function updateConceptMap(map: ConceptMap, tags: string[], boost = 1): void {
   for (const a of tags) {
     if (!map[a]) map[a] = {};
     for (const b of tags) {
-      if (a !== b) map[a][b] = (map[a][b] ?? 0) + 1;
+      if (a !== b) {
+        const w = edgeWeightForTag(a) * edgeWeightForTag(b) * boost;
+        map[a][b] = (map[a][b] ?? 0) + w;
+      }
     }
   }
 }
@@ -132,29 +174,32 @@ function autoLearn(content: string, type: TempEntry["type"]): void {
   const tags = extractTags(content);
   const topic = tags.slice(0, 3).join(" ");
   if (!topic) return;
+  const now = Date.now();
+  const threshold = type === "research" || type === "search" ? 2 : 3;
+  const memoryWeight = type === "research" || type === "search" ? 0.75 : 0.65;
 
   const existing = store.patterns.find((p) => p.topic === topic);
   if (existing) {
     existing.count += 1;
-    existing.lastTs = Date.now();
-    if (existing.count >= 3 && !existing.autoStored) {
+    existing.lastTs = now;
+    if (existing.count >= threshold && !existing.autoStored) {
       existing.autoStored = true;
       const entry: Memory = {
         id: crypto.randomUUID(),
-        ts: Date.now(),
+        ts: now,
         text: type === "search" || type === "research"
           ? `User frequently researches: ${content}`
           : `User frequently does: ${content}`,
         tags,
-        weight: 0.7,
+        weight: memoryWeight,
         src: "auto",
         tier: "universal",
       };
       store.mem.push(entry);
-      updateConceptMap(store.map, tags);
+      updateConceptMap(store.map, tags, 1.25);
     }
   } else {
-    store.patterns.push({ topic, count: 1, firstTs: Date.now(), lastTs: Date.now(), autoStored: false });
+    store.patterns.push({ topic, count: 1, firstTs: now, lastTs: now, autoStored: false });
   }
 
   saveUniversal(store);
@@ -217,7 +262,7 @@ export function remember(
     tier: "universal",
   };
   store.mem.push(entry);
-  updateConceptMap(store.map, tags);
+  updateConceptMap(store.map, tags, src === "user" ? 1.35 : src === "cmd" ? 1.15 : 1);
   saveUniversal(store);
   return entry;
 }
@@ -233,21 +278,34 @@ export function recall(query: string, limit = 5): Memory[] {
   if (!qTags.length) return store.mem.slice(-limit).reverse();
 
   const expanded = new Map<string, number>();
+  const queryTokens = query.toLowerCase();
   for (const tag of qTags) {
     expanded.set(tag, 1.0);
+    for (const alias of getTagAliases(tag)) {
+      expanded.set(alias, Math.max(expanded.get(alias) ?? 0, 0.8));
+    }
     const linked = store.map[tag] ?? {};
     for (const [rel, w] of Object.entries(linked)) {
-      expanded.set(rel, Math.max(expanded.get(rel) ?? 0, w * 0.4));
+      expanded.set(rel, Math.max(expanded.get(rel) ?? 0, Math.min(2.5, w * 0.25)));
     }
   }
 
   return store.mem
     .map((m) => {
-      let score = 0;
-      for (const tag of m.tags) score += expanded.get(tag) ?? 0;
-      return { m, score: score * m.weight };
+      let tagScore = 0;
+      let exactHits = 0;
+      for (const tag of m.tags) {
+        const s = expanded.get(tag) ?? 0;
+        tagScore += s;
+        if (qTags.includes(tag)) exactHits += 1;
+      }
+      const ageDays = Math.max(0, (Date.now() - m.ts) / (1000 * 60 * 60 * 24));
+      const recencyBoost = Math.max(0.72, 1 - ageDays * 0.015);
+      const exactTextBoost = m.text.toLowerCase().includes(queryTokens) ? 1.35 : 1;
+      const score = (tagScore + exactHits * 0.7) * m.weight * recencyBoost * exactTextBoost;
+      return { m, score };
     })
-    .filter((x) => x.score > 0)
+    .filter((x) => x.score > 0.05)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((x) => x.m);

@@ -3,30 +3,52 @@ import { NovaChatInterface, type Attachment } from "./components/NovaOverlay";
 import { SetupWizard } from "./components/SetupWizard";
 import { useVoiceListener } from "./hooks/useVoiceListener";
 import { useNovaStore } from "./store/novaStore";
-import type { PlanStep } from "./store/novaStore";
+import type {
+  ActivePlan,
+  PlanStep,
+  ReplayDesktopAction,
+  TaskReplayDraft,
+} from "./store/novaStore";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { routeCommand, openUrl } from "./lib/commandRouter";
 import type { CommandResult } from "./lib/commandRouter";
 import { routeViaAI } from "./lib/providerClient";
 import { speak } from "./lib/speechSynthesis";
-import { trackActivity } from "./lib/memory";
+import { remember, trackActivity } from "./lib/memory";
 import { closeTaskDialog, showTaskDialog } from "./lib/taskDialogWindow";
 import { trainBinaryBrain } from "./lib/binaryBrain";
+import { getAdapterCapabilities, type AdapterVerificationHints, type ApprovalPreview } from "./lib/appAdapters";
 
 function NovaApp() {
   const [isHoldingSpace, setIsHoldingSpace] = useState(false);
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const holdSpaceRef = useRef(false);
   const pendingAttachmentsRef = useRef<Attachment[]>([]);
+  const approvalResolveRef = useRef<((approved: boolean) => void) | null>(null);
 
   const {
     status, transcript, providerConfig,
     setStatus, setTranscript, setResponse,
     addMessage, clearMessages, resetSetup, theme,
     addActionLog, setPlan, updatePlanStep, clearPlan,
+    beginTaskContext, syncTaskPlan, finishTaskContext,
     backgroundListening, setBackgroundListening, setError, activePlan, permissions, appPolicy, setPermission,
+    setPendingApproval,
   } = useNovaStore();
+
+  function requestApproval(preview: ApprovalPreview): Promise<boolean> {
+    return new Promise((resolve) => {
+      approvalResolveRef.current = resolve;
+      setPendingApproval({ id: crypto.randomUUID(), preview });
+    });
+  }
+
+  function resolveApproval(approved: boolean) {
+    setPendingApproval(null);
+    approvalResolveRef.current?.(approved);
+    approvalResolveRef.current = null;
+  }
   const openaiKey = providerConfig.provider === "openai" ? providerConfig.apiKey : undefined;
   const { voiceSupported, linuxVoiceAvailable, startCommandListening, stopCommandListening, resumeWakeWord, stopAll } =
     useVoiceListener(backgroundListening, openaiKey);
@@ -42,6 +64,10 @@ function NovaApp() {
     }
     void closeTaskDialog();
   }, [activePlan]);
+
+  useEffect(() => {
+    if (activePlan) syncTaskPlan(activePlan);
+  }, [activePlan, syncTaskPlan]);
 
   async function toggleBackgroundListening() {
     if (backgroundListening) {
@@ -121,6 +147,45 @@ function NovaApp() {
     result.type === "desktop_type_text" ||
     result.type === "desktop_mouse_click";
 
+  function toReplayDesktopAction(action: DesktopAction): ReplayDesktopAction {
+    const id = crypto.randomUUID();
+    switch (action.type) {
+      case "desktop_open_app":
+        return { id, kind: action.type, app: action.app, label: action.label };
+      case "desktop_close_app":
+        return { id, kind: action.type, app: action.app, label: action.label };
+      case "browser_navigate":
+        return { id, kind: action.type, url: action.url, label: action.label };
+      case "desktop_focus_window":
+        return { id, kind: action.type, name: action.name, label: action.label };
+      case "desktop_press_key":
+        return { id, kind: action.type, keys: action.keys, label: action.label };
+      case "desktop_type_text":
+        return { id, kind: action.type, text: action.text, label: action.label };
+      case "desktop_mouse_click":
+        return { id, kind: action.type, x: action.x, y: action.y, label: action.label };
+    }
+  }
+
+  function fromReplayDesktopAction(action: ReplayDesktopAction): DesktopAction {
+    switch (action.kind) {
+      case "desktop_open_app":
+        return { type: action.kind, app: action.app, label: action.label };
+      case "desktop_close_app":
+        return { type: action.kind, app: action.app, label: action.label };
+      case "browser_navigate":
+        return { type: action.kind, url: action.url, label: action.label };
+      case "desktop_focus_window":
+        return { type: action.kind, name: action.name, label: action.label };
+      case "desktop_press_key":
+        return { type: action.kind, keys: action.keys, label: action.label };
+      case "desktop_type_text":
+        return { type: action.kind, text: action.text, label: action.label };
+      case "desktop_mouse_click":
+        return { type: action.kind, x: action.x, y: action.y, label: action.label };
+    }
+  }
+
   const describeDesktopAction = (action: DesktopAction): { label: string; detail?: string } => {
     switch (action.type) {
       case "browser_navigate":
@@ -158,6 +223,20 @@ function NovaApp() {
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  function appNameAliases(name: string, hints?: AdapterVerificationHints): string[] {
+    const base = name.trim();
+    if (!base) return [];
+    const lower = base.toLowerCase();
+    const aliases = new Set<string>([base]);
+    const hinted = hints?.appAliases?.[lower] ?? [];
+    for (const alias of hinted) aliases.add(alias);
+    if (lower.includes("telegram")) aliases.add("telegram");
+    if (lower.includes("chrome")) aliases.add("chrome");
+    if (lower.includes("firefox")) aliases.add("firefox");
+    if (lower.includes("discord")) aliases.add("discord");
+    return Array.from(aliases);
   }
 
   function requiredPermissionForAction(action: DesktopAction): keyof typeof permissions {
@@ -304,7 +383,11 @@ function NovaApp() {
     }
   }
 
-  async function runActionWithCheckpoints(action: DesktopAction, stepIds: [string, string, string]) {
+  async function runActionWithCheckpoints(
+    action: DesktopAction,
+    stepIds: [string, string, string],
+    verificationHints?: AdapterVerificationHints,
+  ) {
     const [s1, s2, s3] = stepIds;
 
     if (action.type === "browser_navigate") {
@@ -332,9 +415,23 @@ function NovaApp() {
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
-      await delay(800);
-      // Post-action verification: app should be focusable after launch.
-      await invokeWithRetry("focus_window", { name: action.app }, 1, 180);
+      await delay(700);
+      // Post-action verification should be best-effort: some apps open slowly
+      // or under a process/window name variant.
+      const aliases = appNameAliases(action.app, verificationHints);
+      let focused = false;
+      for (const alias of aliases) {
+        try {
+          await invokeWithRetry("focus_window", { name: alias }, 1, 220);
+          focused = true;
+          break;
+        } catch {
+          // Try next alias.
+        }
+      }
+      if (!focused) {
+        await delay(450);
+      }
       updatePlanStep(s3, "done");
 
     } else if (action.type === "desktop_close_app") {
@@ -343,7 +440,13 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invokeWithRetry("close_application", { app: action.app });
+      try {
+        await invokeWithRetry("close_application", { app: action.app }, 1, 260);
+      } catch {
+        // If the first close did not land, try once more after a short pause.
+        await delay(300);
+        await invokeWithRetry("close_application", { app: action.app }, 1, 260);
+      }
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
@@ -356,7 +459,24 @@ function NovaApp() {
       updatePlanStep(s1, "done");
 
       updatePlanStep(s2, "active");
-      await invokeWithRetry("focus_window", { name: action.name });
+      const focusTargets = [
+        action.name,
+        ...(verificationHints?.focusTargets ?? []),
+      ].filter((value, index, arr) => value && arr.indexOf(value) === index);
+      let focusErr: unknown = null;
+      let focused = false;
+      for (const target of focusTargets) {
+        try {
+          await invokeWithRetry("focus_window", { name: target });
+          focused = true;
+          break;
+        } catch (err) {
+          focusErr = err;
+        }
+      }
+      if (!focused) {
+        throw focusErr instanceof Error ? focusErr : new Error(`Could not focus ${action.name}`);
+      }
       updatePlanStep(s2, "done");
 
       updatePlanStep(s3, "active");
@@ -404,7 +524,20 @@ function NovaApp() {
     }
   }
 
-  async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string) {
+  async function executeDesktopActions(title: string, actions: DesktopAction[], summary?: string, sourceCommand = transcript) {
+    const adapterCapabilitiesEarly = getAdapterCapabilities(actions);
+    if (adapterCapabilitiesEarly?.approvalPreview) {
+      const approved = await requestApproval(adapterCapabilitiesEarly.approvalPreview);
+      if (!approved) {
+        const msg = "Cancelled. You chose not to proceed with the send.";
+        addMessage({ role: "ai", text: msg });
+        setResponse(msg);
+        setStatus("speaking");
+        speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+        return;
+      }
+    }
+
     if (!(await ensureDesktopPermissions(actions))) return;
     for (const action of actions) {
       const blocked = appPolicyBlocks(action);
@@ -416,7 +549,7 @@ function NovaApp() {
         return;
       }
     }
-    if (!(await ensureHighRiskApproval(actions))) {
+    if (!adapterCapabilitiesEarly?.approvalPreview && !(await ensureHighRiskApproval(actions))) {
       const msg = "Cancelled. High-risk action was not approved.";
       addMessage({ role: "ai", text: msg });
       setResponse(msg);
@@ -431,22 +564,32 @@ function NovaApp() {
       steps: planStepsForAction(action),
     }));
     const allSteps: PlanStep[] = expanded.flatMap((e) => e.steps);
-
-    setPlan({ title, topic: title, type: "desktop_task", steps: allSteps });
+    const plan: ActivePlan = { title, topic: title, type: "desktop_task", steps: allSteps };
+    beginTaskContext(sourceCommand, plan, {
+      kind: "desktop_task",
+      actions: actions.map(toReplayDesktopAction),
+    });
+    setPlan(plan);
     addMessage({ role: "ai", text: title });
     trackActivity("command", title);
+    const adapterCapabilities = adapterCapabilitiesEarly;
+    if (adapterCapabilities?.executionText?.startMessage) {
+      addMessage({ role: "ai", text: adapterCapabilities.executionText.startMessage });
+    }
 
     try {
       for (const { action, steps } of expanded) {
         const ids: [string, string, string] = [steps[0].id, steps[1].id, steps[2].id];
-        await runActionWithCheckpoints(action, ids);
+        await runActionWithCheckpoints(action, ids, adapterCapabilities?.verificationHints);
         addActionLog({ ts: Date.now(), type: "os", label: describeDesktopAction(action).label });
       }
     } catch (err) {
       const idx = allSteps.findIndex((s) => s.status === "active");
       const errMsg = err instanceof Error ? err.message : String(err);
       if (idx >= 0) updatePlanStep(allSteps[idx].id, "error", errMsg);
-      const spoken = `Sorry, something went wrong: ${errMsg}`;
+      const spoken = adapterCapabilities?.executionText?.failureMessage ?? `Sorry, something went wrong: ${errMsg}`;
+      finishTaskContext("failed", spoken);
+      remember(`Task failed: ${title}. ${spoken}`, "cmd", 0.72);
       addMessage({ role: "ai", text: spoken });
       setResponse(spoken);
       setStatus("speaking");
@@ -454,7 +597,9 @@ function NovaApp() {
       return;
     }
 
-    const finalMessage = summary ?? actions.map((a) => a.label).join(". ");
+    const finalMessage = adapterCapabilities?.executionText?.successMessage ?? (summary ?? actions.map((a) => a.label).join(". "));
+    finishTaskContext("completed", finalMessage);
+    remember(`Task completed: ${title}. ${finalMessage}`, "cmd", 0.78);
     setResponse(finalMessage);
     addMessage({ role: "ai", text: finalMessage });
     setStatus("speaking");
@@ -464,7 +609,7 @@ function NovaApp() {
   }
 
   // Multi-step YouTube automation — every visible phase is a checkpoint.
-  async function executeYouTubePlay(query: string) {
+  async function executeYouTubePlay(query: string, sourceCommand = transcript) {
     if (!(await ensureBrowserPermission())) return;
 
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
@@ -478,7 +623,9 @@ function NovaApp() {
       { id: id(), label: `Playing "${query}"`,       detail: "Pressing Enter to start playback",  status: "pending" },
     ];
 
-    setPlan({ title: `Playing: ${query}`, topic: query, type: "youtube_play", steps });
+    const plan: ActivePlan = { title: `Playing: ${query}`, topic: query, type: "youtube_play", steps };
+    beginTaskContext(sourceCommand, plan, { kind: "youtube_play", query });
+    setPlan(plan);
     addMessage({ role: "ai", text: `Opening YouTube to play "${query}".` });
     trackActivity("command", `youtube:${query}`);
 
@@ -532,6 +679,8 @@ function NovaApp() {
     const summary = keyNavOk
       ? `Playing "${query}" on YouTube.`
       : `Opened YouTube search for "${query}". Click the first result to play.`;
+    finishTaskContext("completed", summary);
+    remember(`Task completed: Play YouTube "${query}". ${summary}`, "cmd", 0.74);
     setResponse(summary);
     addMessage({ role: "ai", text: summary });
     trainBinaryBrain(transcript, [`youtube:${query}`]);
@@ -542,6 +691,7 @@ function NovaApp() {
   async function executeResearchPlan(
     topic: string,
     steps: Array<{ id: string; label: string; detail: string; url: string; delayMs: number }>,
+    sourceCommand = transcript,
   ) {
     if (!(await ensureBrowserPermission())) return;
 
@@ -552,7 +702,9 @@ function NovaApp() {
       status: "pending",
     }));
 
-    setPlan({ title: `Researching: ${topic}`, topic, type: "research", steps: planSteps });
+    const plan: ActivePlan = { title: `Researching: ${topic}`, topic, type: "research", steps: planSteps };
+    beginTaskContext(sourceCommand, plan, { kind: "research", steps });
+    setPlan(plan);
     addMessage({ role: "ai", text: `Starting research on "${topic}" — opening ${steps.length} sources.` });
     trackActivity("research", topic);
 
@@ -576,6 +728,8 @@ function NovaApp() {
 
     setStatus("speaking");
     const summary = `Opened ${steps.length} sources for "${topic}". Check your browser.`;
+    finishTaskContext("completed", summary);
+    remember(`Task completed: Research ${topic}. ${summary}`, "cmd", 0.76);
     setResponse(summary);
     addMessage({ role: "ai", text: summary });
     trainBinaryBrain(transcript, [`research:${topic}`]);
@@ -603,8 +757,43 @@ function NovaApp() {
       const t0 = performance.now();
 
       try {
+        const taskContext = useNovaStore.getState().taskContext;
+        const wantsTaskResume = /^(?:resume|continue|retry|rerun|run again)(?:\s+(?:my|the))?\s+(?:last|previous)\s+task$/i.test(normalizedInput);
+        const wantsTaskSummary = /^(?:what was|show|recap|summarize)(?:\s+(?:my|the))?\s+(?:last|previous)\s+task$/i.test(normalizedInput);
+
+        if (wantsTaskSummary) {
+          const msg = taskContext
+            ? `Last task: ${taskContext.title}. Status: ${taskContext.status}. ${taskContext.summary ?? "No summary stored yet."}`
+            : "I do not have a previous task stored yet.";
+          const latencyMs = Math.round(performance.now() - t0);
+          addActionLog({ ts: Date.now(), type: "memory", label: msg, latencyMs });
+          addMessage({ role: "ai", text: msg, latencyMs });
+          setResponse(msg);
+          setStatus("speaking");
+          speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+          return;
+        }
+
+        const effectiveInput =
+          wantsTaskResume && taskContext?.sourceCommand
+            ? taskContext.sourceCommand
+            : normalizedInput;
+
+        if (wantsTaskResume && !taskContext?.sourceCommand) {
+          const msg = "I do not have a resumable task yet.";
+          addMessage({ role: "ai", text: msg });
+          setResponse(msg);
+          setStatus("speaking");
+          speak(msg, () => { setStatus("idle"); resumeWakeWord(); });
+          return;
+        }
+
+        if (wantsTaskResume && taskContext?.sourceCommand) {
+          addMessage({ role: "ai", text: `Resuming previous task: ${taskContext.title}.` });
+        }
+
         if (isSimulation && !attachments.length) {
-          const sim = await routeCommand(normalizedInput);
+          const sim = await routeCommand(effectiveInput);
           const simMsg =
             sim.type === "command_chain" ? `Simulation only: would run ${sim.steps.length} planned steps.`
             : sim.type === "youtube_play" ? `Simulation only: would play "${sim.query}" on YouTube.`
@@ -631,7 +820,7 @@ function NovaApp() {
               return `[Document: ${a.name}]\n${atob(b64)}`;
             } catch { return `[Document: ${a.name}]`; }
           }).join("\n\n");
-          const queryWithDocs = docContext ? `${docContext}\n\n${normalizedInput}` : normalizedInput;
+          const queryWithDocs = docContext ? `${docContext}\n\n${effectiveInput}` : effectiveInput;
           trackActivity("ai", queryWithDocs);
           const aiResult = await routeViaAI(queryWithDocs, providerConfig, imageAtts);
           const latencyMs = Math.round(performance.now() - t0);
@@ -642,13 +831,13 @@ function NovaApp() {
             setStatus("speaking");
             speak(aiResult.message, () => { setStatus("idle"); resumeWakeWord(); });
           } else if (isDesktopAction(aiResult)) {
-            await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);
+            await executeDesktopActions(aiResult.label, [aiResult], aiResult.label, effectiveInput);
           }
           if (workflowId) useNovaStore.getState().markWorkflowOutcome(workflowId, true);
           return;
         }
 
-        const result = await routeCommand(normalizedInput);
+        const result = await routeCommand(effectiveInput);
 
         if (result.type === "command_chain") {
           const last = result.steps[result.steps.length - 1];
@@ -658,24 +847,26 @@ function NovaApp() {
             await executeDesktopActions(
               "Desktop task in progress",
               desktopSteps,
-              desktopSteps.map((step) => step.label).join(". ")
+              desktopSteps.map((step) => step.label).join(". "),
+              effectiveInput,
             );
 
           } else if (last.type === "youtube_play") {
             addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${last.query}` });
-            await executeYouTubePlay(last.query);
+            await executeYouTubePlay(last.query, effectiveInput);
 
           } else if (last.type === "live_score") {
             await executeDesktopActions(
               `Opening live score for ${last.query}`,
               [{ type: "browser_navigate", url: last.url, label: `Opening live score for ${last.query}` }],
-              `Opening live score for ${last.query}.`
+              `Opening live score for ${last.query}.`,
+              effectiveInput,
             );
 
           } else if (last.type === "research") {
             trackActivity("research", last.topic);
             addActionLog({ ts: Date.now(), type: "research", label: `Researching: ${last.topic}` });
-            await executeResearchPlan(last.topic, last.steps);
+            await executeResearchPlan(last.topic, last.steps, effectiveInput);
 
           } else if (last.type === "os_action") {
             const message = last.message;
@@ -696,11 +887,11 @@ function NovaApp() {
             const latencyMs = Math.round(performance.now() - t0);
             addActionLog({ ts: Date.now(), type: "ai", label: last.query, latencyMs });
             if (aiResult.type === "youtube_play") {
-              await executeYouTubePlay(aiResult.query);
+              await executeYouTubePlay(aiResult.query, effectiveInput);
             } else if (isDesktopAction(aiResult)) {
-              await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);
+              await executeDesktopActions(aiResult.label, [aiResult], aiResult.label, effectiveInput);
             } else if (aiResult.type === "research") {
-              await executeResearchPlan(aiResult.topic, aiResult.steps);
+              await executeResearchPlan(aiResult.topic, aiResult.steps, effectiveInput);
             } else {
               const msg = aiResult.type === "os_action" ? aiResult.message : "Done.";
               addMessage({ role: "ai", text: msg, latencyMs });
@@ -714,22 +905,23 @@ function NovaApp() {
 
         } else if (result.type === "youtube_play") {
           addActionLog({ ts: Date.now(), type: "os", label: `YouTube: ${result.query}` });
-          await executeYouTubePlay(result.query);
+          await executeYouTubePlay(result.query, effectiveInput);
 
         } else if (isDesktopAction(result)) {
-          await executeDesktopActions(result.label, [result], result.label);
+          await executeDesktopActions(result.label, [result], result.label, effectiveInput);
 
         } else if (result.type === "live_score") {
           await executeDesktopActions(
             `Opening live score for ${result.query}`,
             [{ type: "browser_navigate", url: result.url, label: `Opening live score for ${result.query}` }],
-            `Opening live score for ${result.query}.`
+            `Opening live score for ${result.query}.`,
+            effectiveInput,
           );
 
         } else if (result.type === "research") {
           trackActivity("research", result.topic);
           addActionLog({ ts: Date.now(), type: "research", label: `Researching: ${result.topic}` });
-          await executeResearchPlan(result.topic, result.steps);
+          await executeResearchPlan(result.topic, result.steps, effectiveInput);
 
         } else if (result.type === "os_action") {
           const latencyMs = Math.round(performance.now() - t0);
@@ -761,28 +953,29 @@ function NovaApp() {
               await executeDesktopActions(
                 "Running task",
                 desktopSubset,
-                desktopSubset.map((s) => s.label).join(". ")
+                desktopSubset.map((s) => s.label).join(". "),
+                effectiveInput,
               );
             } else {
               // Mixed (e.g. open app + youtube_play) → run sequentially
               for (const sub of aiResult.steps) {
                 if (sub.type === "youtube_play") {
-                  await executeYouTubePlay(sub.query);
+                  await executeYouTubePlay(sub.query, effectiveInput);
                 } else if (isDesktopAction(sub)) {
-                  await executeDesktopActions(sub.label, [sub], sub.label);
+                  await executeDesktopActions(sub.label, [sub], sub.label, effectiveInput);
                 } else if (sub.type === "research") {
-                  await executeResearchPlan(sub.topic, sub.steps);
+                  await executeResearchPlan(sub.topic, sub.steps, effectiveInput);
                 } else if (sub.type === "os_action") {
                   addMessage({ role: "ai", text: sub.message });
                 }
               }
             }
           } else if (aiResult.type === "youtube_play") {
-            await executeYouTubePlay(aiResult.query);
+            await executeYouTubePlay(aiResult.query, effectiveInput);
           } else if (isDesktopAction(aiResult)) {
-            await executeDesktopActions(aiResult.label, [aiResult], aiResult.label);
+            await executeDesktopActions(aiResult.label, [aiResult], aiResult.label, effectiveInput);
           } else if (aiResult.type === "research") {
-            await executeResearchPlan(aiResult.topic, aiResult.steps);
+            await executeResearchPlan(aiResult.topic, aiResult.steps, effectiveInput);
           } else {
             // os_action → spoken response
             const msg = aiResult.type === "os_action" ? aiResult.message : "Done.";
@@ -863,6 +1056,46 @@ function NovaApp() {
     setStatus("listening");
   }
 
+  async function replayTaskDraft(draft: TaskReplayDraft) {
+    setError(null);
+    setStatus("processing");
+    addMessage({ role: "user", text: `Replay task: ${draft.title}` });
+
+    try {
+      if (draft.payload.kind === "desktop_task") {
+        const actions = draft.payload.actions.map(fromReplayDesktopAction);
+        if (!actions.length) throw new Error("No desktop steps selected for replay.");
+        await executeDesktopActions(
+          draft.title,
+          actions,
+          actions.map((action) => action.label).join(". "),
+          draft.sourceCommand || draft.title,
+        );
+        return;
+      }
+
+      if (draft.payload.kind === "youtube_play") {
+        const query = draft.payload.query.trim();
+        if (!query) throw new Error("YouTube replay query is empty.");
+        await executeYouTubePlay(query, draft.sourceCommand || draft.title);
+        return;
+      }
+
+      const steps = draft.payload.steps;
+      if (!steps.length) throw new Error("No research steps selected for replay.");
+      await executeResearchPlan(
+        draft.title.replace(/^Researching:\s*/i, "").trim() || draft.title,
+        steps,
+        draft.sourceCommand || draft.title,
+      );
+    } catch (err) {
+      clearPlan();
+      const msg = err instanceof Error ? err.message : "Replay failed.";
+      useNovaStore.getState().setError(msg);
+      setStatus("error");
+    }
+  }
+
   return (
     <NovaChatInterface
       isHoldingSpace={isHoldingSpace}
@@ -870,9 +1103,11 @@ function NovaApp() {
       backgroundListening={backgroundListening}
       ollamaConnected={ollamaConnected}
       onSubmitText={submitText}
+      onReplayTaskDraft={replayTaskDraft}
       onToggleBackgroundListening={toggleBackgroundListening}
       onClearChat={clearMessages}
       onResetSetup={resetSetup}
+      onApprovalDecision={resolveApproval}
     />
   );
 }

@@ -8,6 +8,7 @@ export interface Attachment {
   dataUrl: string; // base64 data URL
 }
 import { useNovaStore } from "../store/novaStore";
+import type { ApprovalPreview } from "../lib/appAdapters";
 import { WaveformAnimation } from "./WaveformAnimation";
 import { StatusIndicator } from "./StatusIndicator";
 import {
@@ -16,7 +17,12 @@ import {
   remember,
   type Memory, type TempEntry, type BehaviorPattern,
 } from "../lib/memory";
-import type { ActionLogEntry, RecordedInputEvent } from "../store/novaStore";
+import type {
+  ActionLogEntry,
+  RecordedInputEvent,
+  ReplayDesktopAction,
+  TaskReplayDraft,
+} from "../store/novaStore";
 import { TaskPlanPanel } from "./TaskPlanPanel";
 import { getBinaryBrainStats, exportBinaryBrain, importBinaryBrain, resetBinaryBrain } from "../lib/binaryBrain";
 import { fetchOllamaModels } from "../lib/providerClient";
@@ -27,18 +33,108 @@ interface NovaChatInterfaceProps {
   backgroundListening: boolean;
   ollamaConnected: boolean | null;
   onSubmitText: (text: string, attachments?: Attachment[]) => void;
+  onReplayTaskDraft: (draft: TaskReplayDraft) => void;
   onToggleBackgroundListening: () => void;
   onClearChat: () => void;
   onResetSetup: () => void;
+  onApprovalDecision: (approved: boolean) => void;
+}
+
+function ApprovalModal({ preview, onDecision }: { preview: ApprovalPreview; onDecision: (approved: boolean) => void }) {
+  const riskColor = preview.riskTier === "high"
+    ? "border-red-500/60 text-red-600 dark:text-red-300 bg-red-500/10"
+    : "border-amber-500/60 text-amber-600 dark:text-amber-300 bg-amber-500/10";
+
+  return (
+    <div className="absolute inset-0 z-50 bg-black/55 backdrop-blur-[3px] flex items-center justify-center p-4">
+      <div className="w-[min(560px,100%)] rounded-[18px] border-2 border-black dark:border-[#404040] bg-[#e4e4e4] dark:bg-[#161616] shadow-[0_12px_0_#000] dark:shadow-[0_12px_0_#2a2a2a] overflow-hidden">
+        {/* Header band */}
+        <div className="bg-black dark:bg-[#1e1e1e] px-5 py-3.5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl leading-none">{preview.appIcon}</span>
+            <div>
+              <div className="text-[10px] tracking-[0.3em] uppercase text-white/50">Send via</div>
+              <div className="text-[15px] font-semibold text-white tracking-wide">{preview.app}</div>
+            </div>
+          </div>
+          <span className={`text-[9px] tracking-[0.22em] uppercase px-2.5 py-1 rounded-full border font-medium ${riskColor}`}>
+            {preview.riskTier} risk
+          </span>
+        </div>
+
+        <div className="p-5 flex flex-col gap-4">
+          {/* Recipient + message */}
+          {(preview.recipient || preview.messageSummary) && (
+            <div className="rounded-[12px] border border-black/15 dark:border-white/10 bg-white/60 dark:bg-white/5 divide-y divide-black/10 dark:divide-white/8 overflow-hidden">
+              {preview.recipient && (
+                <div className="px-4 py-2.5 flex items-baseline gap-3">
+                  <span className="text-[9px] tracking-[0.25em] uppercase text-black/40 dark:text-white/35 shrink-0 w-14">To</span>
+                  <span className="text-[13px] text-black dark:text-white font-medium">{preview.recipient}</span>
+                </div>
+              )}
+              {preview.messageSummary && (
+                <div className="px-4 py-2.5 flex items-baseline gap-3">
+                  <span className="text-[9px] tracking-[0.25em] uppercase text-black/40 dark:text-white/35 shrink-0 w-14">Msg</span>
+                  <span className="text-[12px] text-black/80 dark:text-white/70 leading-relaxed italic">"{preview.messageSummary}"</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Planned steps */}
+          <div>
+            <div className="text-[9px] tracking-[0.25em] uppercase text-black/40 dark:text-white/35 mb-2">
+              {preview.plannedSteps.length} planned steps
+            </div>
+            <div className="space-y-1 max-h-[180px] overflow-y-auto pr-1">
+              {preview.plannedSteps.map((step, i) => (
+                <div key={i} className="flex items-center gap-2.5 rounded-[8px] bg-black/5 dark:bg-white/5 px-3 py-1.5">
+                  <span className="text-[9px] text-black/30 dark:text-white/25 tabular-nums w-4 shrink-0">{i + 1}</span>
+                  <span className="text-[11px] text-black/70 dark:text-white/60">{step}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Consent note */}
+          <div className="rounded-[10px] border border-black/10 dark:border-white/8 bg-black/5 dark:bg-white/5 px-3 py-2">
+            <p className="text-[10px] text-black/50 dark:text-white/40 leading-relaxed">
+              Nova will control your desktop to complete this. Confirming means Nova will type, click, and press keys as shown above.
+            </p>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 justify-end">
+            <button
+              type="button"
+              onClick={() => onDecision(false)}
+              className="px-4 py-2 rounded-[10px] border border-black/25 dark:border-white/20 text-[10px] tracking-[0.2em] uppercase text-black/60 dark:text-white/50 hover:border-black/50 dark:hover:border-white/40 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => onDecision(true)}
+              className="px-5 py-2 rounded-[10px] border border-black dark:border-white bg-black dark:bg-white text-[10px] tracking-[0.2em] uppercase text-white dark:text-black hover:opacity-80 transition-opacity font-medium"
+            >
+              Confirm Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const QUICK_COMMANDS = [
-  { label: "Iran US war news",   cmd: "get me articles about Iran US war" },
-  { label: "Open YouTube",       cmd: "open youtube" },
-  { label: "Search news",        cmd: "get me articles about latest tech news" },
-  { label: "Open GitHub",        cmd: "open github" },
-  { label: "What is AI?",        cmd: "what is artificial intelligence?" },
-  { label: "Open Gmail",         cmd: "open gmail" },
+  { label: "↩ Resume task",      cmd: "resume previous task",                                       color: "border-purple-500/40 text-purple-700 dark:text-purple-300 hover:bg-purple-500/10" },
+  { label: "✉ Open Gmail",       cmd: "open gmail",                                                  color: "border-red-500/40 text-red-700 dark:text-red-300 hover:bg-red-500/10" },
+  { label: "✈ Telegram msg",     cmd: 'send telegram message to Alex "hey, checking in"',           color: "border-blue-500/40 text-blue-700 dark:text-blue-300 hover:bg-blue-500/10" },
+  { label: "# Slack message",    cmd: 'send in slack alex "checking in on the design review"',       color: "border-green-500/40 text-green-700 dark:text-green-300 hover:bg-green-500/10" },
+  { label: "▷ YouTube",          cmd: "play lofi hip hop on youtube",                                color: "border-red-500/40 text-red-700 dark:text-red-300 hover:bg-red-500/10" },
+  { label: "◎ Research news",    cmd: "get me articles about latest tech news",                      color: "border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10" },
+  { label: "⤢ Open GitHub",      cmd: "open github",                                                 color: "border-black/30 dark:border-white/20 text-black/60 dark:text-white/50 hover:bg-black/5" },
+  { label: "? What is AI",       cmd: "what is artificial intelligence?",                            color: "border-black/30 dark:border-white/20 text-black/60 dark:text-white/50 hover:bg-black/5" },
 ];
 
 function useUptime(sessionStart: number) {
@@ -77,16 +173,19 @@ export function NovaChatInterface({
   backgroundListening,
   ollamaConnected,
   onSubmitText,
+  onReplayTaskDraft,
   onToggleBackgroundListening,
   onClearChat,
   onResetSetup,
+  onApprovalDecision,
 }: NovaChatInterfaceProps) {
   const {
     status, transcript, messages, errorMessage,
     providerConfig, theme, toggleTheme,
-    actionLog, sessionStart, activePlan, permissions, appPolicy, setPermission, setAppPolicyMode, setAppPolicyEntries, binaryBrain, setBinaryBrainEnabled,
+    actionLog, sessionStart, activePlan, taskContext, permissions, appPolicy, setPermission, setAppPolicyMode, setAppPolicyEntries, binaryBrain, setBinaryBrainEnabled,
     saveProviderConfig,
     learnedMacros, saveMacro, deleteMacro, markWorkflowRun, markWorkflowOutcome,
+    pendingApproval,
   } = useNovaStore();
 
   const isWaveformActive = status === "listening" || status === "speaking";
@@ -122,6 +221,7 @@ export function NovaChatInterface({
 
   // Learning mode — when ON, polls input events every 15 s and auto-saves named segments
   const [learningMode, setLearningMode] = useState(false);
+  const [replayDraft, setReplayDraft] = useState<TaskReplayDraft | null>(null);
 
   const uptime = useUptime(sessionStart);
   const permissionItems = ([
@@ -252,6 +352,122 @@ export function NovaChatInterface({
     });
     remember(`Workflow saved manually: ${text}`, "user", 0.72);
     setInputText("");
+  }
+
+  function formatTaskTimestamp(ts: number): string {
+    const deltaMs = Math.max(0, Date.now() - ts);
+    const mins = Math.floor(deltaMs / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
+  function runLastTask() {
+    if (!taskContext?.sourceCommand || isBusy || !!activePlan) return;
+    onSubmitText("resume previous task");
+  }
+
+  function openReplayEditor() {
+    if (!taskContext?.replayPayload) return;
+    setReplayDraft({
+      title: taskContext.title,
+      sourceCommand: taskContext.sourceCommand,
+      payload: structuredClone(taskContext.replayPayload),
+    });
+  }
+
+  function updateReplayTitle(title: string) {
+    setReplayDraft((draft) => (draft ? { ...draft, title } : draft));
+  }
+
+  function updateReplayCommand(sourceCommand: string) {
+    setReplayDraft((draft) => (draft ? { ...draft, sourceCommand } : draft));
+  }
+
+  function removeReplayDesktopAction(actionId: string) {
+    setReplayDraft((draft) => {
+      if (!draft || draft.payload.kind !== "desktop_task") return draft;
+      return {
+        ...draft,
+        payload: {
+          ...draft.payload,
+          actions: draft.payload.actions.filter((action) => action.id !== actionId),
+        },
+      };
+    });
+  }
+
+  function updateReplayDesktopAction(actionId: string, patch: Partial<ReplayDesktopAction>) {
+    setReplayDraft((draft) => {
+      if (!draft || draft.payload.kind !== "desktop_task") return draft;
+      return {
+        ...draft,
+        payload: {
+          ...draft.payload,
+          actions: draft.payload.actions.map((action) =>
+            action.id === actionId ? { ...action, ...patch } as ReplayDesktopAction : action
+          ),
+        },
+      };
+    });
+  }
+
+  function removeReplayResearchStep(stepId: string) {
+    setReplayDraft((draft) => {
+      if (!draft || draft.payload.kind !== "research") return draft;
+      return {
+        ...draft,
+        payload: {
+          ...draft.payload,
+          steps: draft.payload.steps.filter((step) => step.id !== stepId),
+        },
+      };
+    });
+  }
+
+  function updateReplayResearchStep(stepId: string, patch: { label?: string; detail?: string; url?: string }) {
+    setReplayDraft((draft) => {
+      if (!draft || draft.payload.kind !== "research") return draft;
+      return {
+        ...draft,
+        payload: {
+          ...draft.payload,
+          steps: draft.payload.steps.map((step) => (step.id === stepId ? { ...step, ...patch } : step)),
+        },
+      };
+    });
+  }
+
+  function runEditedReplay() {
+    if (!replayDraft || isBusy || !!activePlan) return;
+    onReplayTaskDraft(replayDraft);
+    setReplayDraft(null);
+  }
+
+  function taskStatusLabel() {
+    if (!taskContext) return "";
+    if (taskContext.status === "completed") return "Ready to repeat";
+    if (taskContext.status === "failed") return "Needs attention";
+    if (taskContext.status === "interrupted") return "Ready to resume";
+    return "In progress";
+  }
+
+  function taskSuggestedAction() {
+    if (!taskContext) return "";
+    if (taskContext.status === "completed") return "Run it again or edit the plan for a variation.";
+    if (taskContext.status === "failed") return "Edit the plan or retry after fixing the app/window state.";
+    if (taskContext.status === "interrupted") return "Resume from the stored plan or trim steps before replay.";
+    return "Wait for the current task to complete.";
+  }
+
+  function replayStepCount() {
+    if (!replayDraft) return 0;
+    if (replayDraft.payload.kind === "desktop_task") return replayDraft.payload.actions.length;
+    if (replayDraft.payload.kind === "research") return replayDraft.payload.steps.length;
+    return 1;
   }
 
   const cfg = providerConfig;
@@ -479,26 +695,27 @@ export function NovaChatInterface({
           <div className="flex gap-3 flex-1 min-h-0">
 
           {/* Left nav */}
-          <nav className="rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-2 flex flex-col gap-1.5 shrink-0 w-[58px]">
+          <nav className="rounded-[18px] border border-black dark:border-[#3a3a3a] bg-[#dddddd] dark:bg-[#1a1a1a] p-2 flex flex-col gap-1.5 shrink-0 w-[66px]">
             {([
-              { id: "home", label: "Home" },
-              { id: "model", label: "Model" },
-              { id: "workflows", label: "Flows" },
-              { id: "health", label: "Health" },
-              { id: "permissions", label: "Perms" },
-              { id: "brain", label: "Brain" },
+              { id: "home",        icon: "⌂",  label: "Home" },
+              { id: "model",       icon: "⚙",  label: "Model" },
+              { id: "workflows",   icon: "⟳",  label: "Flows" },
+              { id: "health",      icon: "◎",  label: "Health" },
+              { id: "permissions", icon: "⛨",  label: "Perms" },
+              { id: "brain",       icon: "◉",  label: "Brain" },
             ] as const).map((page) => (
               <button
                 key={page.id}
                 type="button"
                 onClick={() => setSidebarPage(page.id)}
-                className={`text-[8px] tracking-widest uppercase py-3 px-1 rounded-[10px] border transition-colors text-center leading-tight w-full ${
+                className={`flex flex-col items-center gap-0.5 py-2.5 px-1 rounded-[10px] border transition-colors text-center leading-tight w-full ${
                   sidebarPage === page.id
                     ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
                     : "border-black/20 dark:border-white/20 text-black/45 dark:text-white/35 hover:border-black/50 dark:hover:border-white/50"
                 }`}
               >
-                {page.label}
+                <span className="text-[13px] leading-none">{page.icon}</span>
+                <span className="text-[7px] tracking-widest uppercase mt-0.5">{page.label}</span>
               </button>
             ))}
           </nav>
@@ -608,51 +825,85 @@ export function NovaChatInterface({
               </div>
 
               {learnedMacros.length === 0 ? (
-                <div className="rounded-[12px] border border-dashed border-black/25 dark:border-white/15 px-3 py-3 text-[11px] text-black/40 dark:text-white/30">
-                  No workflows yet. Enable Brain learning mode or save one manually.
+                <div className="rounded-[12px] border border-dashed border-black/25 dark:border-white/15 px-4 py-6 text-center">
+                  <div className="text-[24px] mb-2 opacity-30">⟳</div>
+                  <div className="text-[11px] text-black/40 dark:text-white/30">No workflows yet.</div>
+                  <div className="text-[10px] text-black/30 dark:text-white/20 mt-0.5">Enable Brain learning mode or save one manually below.</div>
                 </div>
               ) : (
-                <div className="space-y-1.5">
-                  {learnedMacros.slice().reverse().map((macro) => (
-                    <div key={macro.id} className="rounded-[10px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] px-3 py-2 flex items-center gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[11px] text-black/80 dark:text-white/65 truncate">{macro.name}</div>
-                        <div className="text-[9px] text-black/35 dark:text-white/25">
-                          {macro.events.length} events · {new Date(macro.createdAt).toLocaleDateString()}
-                          {` · runs ${macro.runs ?? 0} · ok ${macro.successes ?? 0} · fail ${macro.failures ?? 0}`}
+                <div className="space-y-2">
+                  {learnedMacros.slice().reverse().map((macro) => {
+                    const runs = macro.runs ?? 0;
+                    const ok = macro.successes ?? 0;
+                    const fail = macro.failures ?? 0;
+                    const reliability = runs > 0 ? Math.round((ok / runs) * 100) : null;
+                    return (
+                      <div key={macro.id} className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] p-3">
+                        <div className="flex items-start gap-2 mb-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[12px] text-black/85 dark:text-white/70 leading-snug">{macro.name}</div>
+                            <div className="text-[9px] text-black/35 dark:text-white/25 mt-0.5">
+                              {new Date(macro.createdAt).toLocaleDateString()} · {runs} runs
+                              {macro.lastRunAt && ` · last ${formatTaskTimestamp(macro.lastRunAt)}`}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => deleteMacro(macro.id)}
+                            className="shrink-0 text-[9px] px-2 py-1 rounded border border-red-500/30 text-red-600 dark:text-red-400 hover:border-red-500/50 transition-colors"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        {runs > 0 && (
+                          <div className="mb-2">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-[9px] uppercase tracking-widest text-black/35 dark:text-white/25">Reliability</span>
+                              <span className={`text-[10px] tabular-nums font-medium ${reliability !== null && reliability >= 75 ? "text-green-600 dark:text-green-400" : reliability !== null && reliability >= 40 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400"}`}>
+                                {reliability !== null ? `${reliability}%` : "—"}
+                              </span>
+                            </div>
+                            <div className="h-1 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all ${reliability !== null && reliability >= 75 ? "bg-green-500" : reliability !== null && reliability >= 40 ? "bg-amber-500" : "bg-red-500"}`}
+                                style={{ width: `${reliability ?? 0}%` }}
+                              />
+                            </div>
+                            <div className="flex gap-2 mt-1">
+                              <span className="text-[9px] text-green-600 dark:text-green-400">{ok} ok</span>
+                              <span className="text-[9px] text-red-600 dark:text-red-400">{fail} fail</span>
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => runLearnedWorkflow(macro.name)}
+                            disabled={isBusy}
+                            className="flex-1 text-[10px] tracking-[0.15em] uppercase px-3 py-1.5 rounded-[8px] border border-black dark:border-white bg-black dark:bg-white text-white dark:text-black disabled:opacity-30 hover:opacity-80 transition-opacity"
+                          >
+                            ▷ Run
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => markWorkflowOutcome(macro.id, true)}
+                            className="text-[9px] px-2 py-1.5 rounded-[8px] border border-green-500/30 text-green-600 dark:text-green-400 hover:border-green-500/50 transition-colors"
+                            title="Mark success"
+                          >
+                            +OK
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => markWorkflowOutcome(macro.id, false)}
+                            className="text-[9px] px-2 py-1.5 rounded-[8px] border border-red-500/30 text-red-600 dark:text-red-400 hover:border-red-500/50 transition-colors"
+                            title="Mark failure"
+                          >
+                            +Fail
+                          </button>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => runLearnedWorkflow(macro.name)}
-                        disabled={isBusy}
-                        className="text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55 disabled:opacity-35"
-                      >
-                        Run
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteMacro(macro.id)}
-                        className="text-[9px] px-2 py-1 rounded border border-red-500/30 text-red-600 dark:text-red-400"
-                      >
-                        Del
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => markWorkflowOutcome(macro.id, true)}
-                        className="text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55"
-                      >
-                        +OK
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => markWorkflowOutcome(macro.id, false)}
-                        className="text-[9px] px-2 py-1 rounded border border-black/35 dark:border-white/25 text-black/70 dark:text-white/55"
-                      >
-                        +Fail
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -938,23 +1189,31 @@ export function NovaChatInterface({
                 {messages.map((msg) => (
                   <div
                     key={msg.id}
-                    className={`rounded-[14px] border border-black dark:border-[#3a3a3a] p-3 ${
+                    className={`rounded-[14px] border p-3 ${
                       msg.role === "user"
-                        ? "bg-[#f1f1f1] dark:bg-[#2a2a2a] ml-6"
-                        : "bg-white dark:bg-[#1a1a1a] mr-6"
+                        ? "border-black dark:border-[#3a3a3a] bg-black dark:bg-[#2e2e2e] ml-8"
+                        : "border-black/20 dark:border-[#3a3a3a] bg-white dark:bg-[#1e1e1e] mr-8"
                     }`}
                   >
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="text-[10px] tracking-[0.2em] uppercase text-black/45 dark:text-white/35">
-                        {msg.role === "user" ? "You" : "Nova"}
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className={`text-[9px] tracking-[0.28em] uppercase font-medium ${
+                        msg.role === "user"
+                          ? "text-white/60"
+                          : "text-black/40 dark:text-white/35"
+                      }`}>
+                        {msg.role === "user" ? "▸ YOU" : "◆ NOVA"}
                       </div>
                       {msg.latencyMs !== undefined && (
-                        <div className="text-[9px] tracking-[0.15em] uppercase text-black/30 dark:text-white/25">
+                        <div className={`text-[9px] tracking-[0.15em] uppercase tabular-nums ${
+                          msg.role === "user" ? "text-white/35" : "text-black/25 dark:text-white/20"
+                        }`}>
                           {fmtMs(msg.latencyMs)}
                         </div>
                       )}
                     </div>
-                    <div className="text-[14px] text-black dark:text-[#e8e8e8] leading-relaxed">{msg.text}</div>
+                    <div className={`text-[13px] leading-relaxed ${
+                      msg.role === "user" ? "text-white dark:text-white" : "text-black dark:text-[#e8e8e8]"
+                    }`}>{msg.text}</div>
                   </div>
                 ))}
 
@@ -1057,6 +1316,87 @@ export function NovaChatInterface({
                 </div>
 
                 <div className="overflow-y-auto flex-1 space-y-1.5 min-h-0">
+                  {taskContext && (
+                    <div className="rounded-[14px] border border-black dark:border-[#3a3a3a] bg-[linear-gradient(135deg,#f5f0e6_0%,#ececec_52%,#e4eef6_100%)] dark:bg-[linear-gradient(135deg,#24211d_0%,#242424_52%,#1d2530_100%)] px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="text-[9px] tracking-[0.22em] uppercase text-black/35 dark:text-white/30">Task Center</span>
+                        <span className={`text-[9px] tracking-wide uppercase px-1.5 py-0.5 rounded border ${
+                          taskContext.status === "completed"
+                            ? "border-green-600/40 text-green-700 dark:text-green-300"
+                            : taskContext.status === "failed"
+                            ? "border-red-600/40 text-red-700 dark:text-red-300"
+                            : taskContext.status === "interrupted"
+                            ? "border-amber-600/40 text-amber-700 dark:text-amber-300"
+                            : "border-blue-600/40 text-blue-700 dark:text-blue-300"
+                        }`}>
+                          {taskContext.status}
+                        </span>
+                        <span className="ml-auto text-[9px] text-black/30 dark:text-white/25">
+                          {formatTaskTimestamp(taskContext.updatedAt)}
+                        </span>
+                      </div>
+                      <div className="text-[16px] font-semibold text-black dark:text-[#f3efe7] tracking-[0.02em]">
+                        {taskStatusLabel()}
+                      </div>
+                      <div className="text-[12px] text-black dark:text-[#e8e8e8] font-medium leading-snug">
+                        {taskContext.title}
+                      </div>
+                      <div className="mt-2 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            taskContext.status === "completed"
+                              ? "bg-green-600 dark:bg-green-400"
+                              : taskContext.status === "failed"
+                              ? "bg-red-600 dark:bg-red-400"
+                              : taskContext.status === "interrupted"
+                              ? "bg-amber-500 dark:bg-amber-400"
+                              : "bg-black dark:bg-white"
+                          }`}
+                          style={{ width: `${taskContext.totalSteps > 0 ? Math.round((taskContext.completedSteps / taskContext.totalSteps) * 100) : 0}%` }}
+                        />
+                      </div>
+                      <div className="mt-1 text-[10px] text-black/45 dark:text-white/35 flex items-center justify-between">
+                        <span>{taskContext.completedSteps}/{taskContext.totalSteps} steps complete</span>
+                        <span>{taskContext.type.replace(/_/g, " ")}</span>
+                      </div>
+                      <div className="mt-1.5 text-[11px] text-black/70 dark:text-white/55 leading-snug line-clamp-3">
+                        {taskContext.summary ?? `Command: ${taskContext.sourceCommand}`}
+                      </div>
+                      <div className="mt-2 rounded-[10px] border border-black/10 dark:border-white/10 bg-white/50 dark:bg-black/10 px-2.5 py-2">
+                        <div className="text-[9px] tracking-[0.18em] uppercase text-black/35 dark:text-white/30">Suggested Next Step</div>
+                        <div className="mt-1 text-[11px] text-black/70 dark:text-white/55 leading-snug">
+                          {taskSuggestedAction()}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={runLastTask}
+                          disabled={isBusy || !!activePlan || !taskContext.sourceCommand}
+                          className="text-[10px] tracking-[0.18em] uppercase px-2.5 py-1 rounded-[10px] border border-black dark:border-[#e8e8e8] bg-black dark:bg-[#e8e8e8] text-white dark:text-black disabled:opacity-30"
+                        >
+                          {taskContext.status === "completed" ? "Run Again" : taskContext.status === "failed" ? "Retry Task" : "Resume Task"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={openReplayEditor}
+                          disabled={isBusy || !!activePlan}
+                          className="text-[10px] tracking-[0.18em] uppercase px-2.5 py-1 rounded-[10px] border border-black/25 dark:border-white/15 text-black/55 dark:text-white/45 disabled:opacity-30"
+                        >
+                          Edit Plan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setInputText("what was my last task")}
+                          disabled={isBusy || !!activePlan}
+                          className="text-[10px] tracking-[0.18em] uppercase px-2.5 py-1 rounded-[10px] border border-black/25 dark:border-white/15 text-black/55 dark:text-white/45 disabled:opacity-30"
+                        >
+                          Inspect
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* TEMP */}
                   {memTab === "session" && (
                     <>
@@ -1165,14 +1505,14 @@ export function NovaChatInterface({
 
               {/* Quick commands */}
               <div className="shrink-0">
-                <h3 className="text-[11px] tracking-[0.32em] uppercase text-black/60 dark:text-white/45 mb-2">Quick Commands</h3>
+                <h3 className="text-[10px] tracking-[0.3em] uppercase text-black/50 dark:text-white/40 mb-2">Quick Commands</h3>
                 <div className="flex flex-wrap gap-1.5">
-                  {QUICK_COMMANDS.map(({ label, cmd }) => (
+                  {QUICK_COMMANDS.map(({ label, cmd, color }) => (
                     <button
                       key={cmd}
                       onClick={() => { if (!isBusy) onSubmitText(cmd); }}
                       disabled={isBusy}
-                      className="px-2.5 py-1 rounded-full border border-black/40 dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] text-[11px] text-black/70 dark:text-white/55 hover:border-black dark:hover:border-white/40 hover:bg-white dark:hover:bg-[#2a2a2a] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                      className={`px-2.5 py-1 rounded-full border text-[10px] bg-transparent transition-all disabled:opacity-40 disabled:cursor-not-allowed ${color}`}
                     >
                       {label}
                     </button>
@@ -1276,6 +1616,245 @@ export function NovaChatInterface({
           </div>
 
           </div>
+          )}
+
+          {pendingApproval && (
+            <ApprovalModal
+              preview={pendingApproval.preview}
+              onDecision={onApprovalDecision}
+            />
+          )}
+
+          {replayDraft && (
+            <div className="absolute inset-0 z-30 bg-black/40 backdrop-blur-[2px] flex items-center justify-center p-4">
+              <div className="w-[min(760px,100%)] max-h-[90vh] rounded-[16px] border-2 border-black dark:border-[#3a3a3a] bg-[#dfdfdf] dark:bg-[#171717] shadow-[0_10px_0_#000] dark:shadow-[0_10px_0_#2a2a2a] p-2">
+                <div className="rounded-[12px] border border-black dark:border-[#3a3a3a] bg-[#ececec] dark:bg-[#242424] p-4 flex flex-col gap-3 max-h-[calc(90vh-1rem)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] tracking-[0.26em] uppercase text-black/45 dark:text-white/35">Replay Editor</div>
+                      <div className="text-[15px] font-medium text-black dark:text-[#e8e8e8] mt-1">Edit task before replay</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setReplayDraft(null)}
+                      className="text-[10px] tracking-[0.18em] uppercase px-2.5 py-1 rounded-[10px] border border-black/25 dark:border-white/15 text-black/55 dark:text-white/45"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  <div className="rounded-[12px] border border-black/15 dark:border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.7),rgba(230,236,242,0.7))] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.04),rgba(120,140,160,0.08))] px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <div>
+                        <div className="text-[9px] tracking-[0.2em] uppercase text-black/35 dark:text-white/30">Replay Summary</div>
+                        <div className="mt-1 text-[13px] text-black dark:text-white">{replayStepCount()} editable step{replayStepCount() === 1 ? "" : "s"}</div>
+                      </div>
+                      <div className="text-[10px] text-black/50 dark:text-white/40 max-w-[360px]">
+                        Remove anything unnecessary, adjust names or message text, then replay exactly this edited plan.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Title</span>
+                      <input
+                        value={replayDraft.title}
+                        onChange={(e) => updateReplayTitle(e.target.value)}
+                        className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Source Command</span>
+                      <input
+                        value={replayDraft.sourceCommand}
+                        onChange={(e) => updateReplayCommand(e.target.value)}
+                        className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="overflow-y-auto flex-1 space-y-2 pr-1">
+                    {replayDraft.payload.kind === "desktop_task" && replayDraft.payload.actions.map((action, index) => (
+                      <div key={action.id} className="rounded-[12px] border border-black/20 dark:border-white/15 bg-white/70 dark:bg-black/20 p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] tracking-[0.2em] uppercase text-black/35 dark:text-white/25">Step {index + 1}</span>
+                          <span className="text-[9px] tracking-wide uppercase px-1.5 py-0.5 rounded border border-black/15 dark:border-white/10 text-black/45 dark:text-white/35">
+                            {action.kind.replace(/_/g, " ")}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeReplayDesktopAction(action.id)}
+                            className="ml-auto text-[9px] tracking-[0.18em] uppercase px-2 py-1 rounded border border-red-500/30 text-red-600 dark:text-red-400"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Label</span>
+                          <input
+                            value={action.label}
+                            onChange={(e) => updateReplayDesktopAction(action.id, { label: e.target.value })}
+                            className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                          />
+                        </label>
+                        {"app" in action && (
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">App</span>
+                            <input
+                              value={action.app}
+                              onChange={(e) => updateReplayDesktopAction(action.id, { app: e.target.value } as Partial<ReplayDesktopAction>)}
+                              className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                            />
+                          </label>
+                        )}
+                        {"name" in action && (
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Window Name</span>
+                            <input
+                              value={action.name}
+                              onChange={(e) => updateReplayDesktopAction(action.id, { name: e.target.value } as Partial<ReplayDesktopAction>)}
+                              className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                            />
+                          </label>
+                        )}
+                        {"url" in action && (
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">URL</span>
+                            <input
+                              value={action.url}
+                              onChange={(e) => updateReplayDesktopAction(action.id, { url: e.target.value } as Partial<ReplayDesktopAction>)}
+                              className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                            />
+                          </label>
+                        )}
+                        {"keys" in action && (
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Keys</span>
+                            <input
+                              value={action.keys}
+                              onChange={(e) => updateReplayDesktopAction(action.id, { keys: e.target.value } as Partial<ReplayDesktopAction>)}
+                              className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                            />
+                          </label>
+                        )}
+                        {"text" in action && (
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Text</span>
+                            <textarea
+                              value={action.text}
+                              onChange={(e) => updateReplayDesktopAction(action.id, { text: e.target.value } as Partial<ReplayDesktopAction>)}
+                              rows={3}
+                              className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white resize-y"
+                            />
+                          </label>
+                        )}
+                        {"x" in action && "y" in action && (
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex flex-col gap-1">
+                              <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">X</span>
+                              <input
+                                type="number"
+                                value={action.x}
+                                onChange={(e) => updateReplayDesktopAction(action.id, { x: Number(e.target.value) } as Partial<ReplayDesktopAction>)}
+                                className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1">
+                              <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Y</span>
+                              <input
+                                type="number"
+                                value={action.y}
+                                onChange={(e) => updateReplayDesktopAction(action.id, { y: Number(e.target.value) } as Partial<ReplayDesktopAction>)}
+                                className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                              />
+                            </label>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+
+                    {replayDraft.payload.kind === "research" && replayDraft.payload.steps.map((step, index) => (
+                      <div key={step.id} className="rounded-[12px] border border-black/20 dark:border-white/15 bg-white/70 dark:bg-black/20 p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] tracking-[0.2em] uppercase text-black/35 dark:text-white/25">Source {index + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeReplayResearchStep(step.id)}
+                            className="ml-auto text-[9px] tracking-[0.18em] uppercase px-2 py-1 rounded border border-red-500/30 text-red-600 dark:text-red-400"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Label</span>
+                          <input
+                            value={step.label}
+                            onChange={(e) => updateReplayResearchStep(step.id, { label: e.target.value })}
+                            className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">Detail</span>
+                          <input
+                            value={step.detail}
+                            onChange={(e) => updateReplayResearchStep(step.id, { detail: e.target.value })}
+                            className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">URL</span>
+                          <input
+                            value={step.url}
+                            onChange={(e) => updateReplayResearchStep(step.id, { url: e.target.value })}
+                            className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                          />
+                        </label>
+                      </div>
+                    ))}
+
+                    {replayDraft.payload.kind === "youtube_play" && (
+                      <div className="rounded-[12px] border border-black/20 dark:border-white/15 bg-white/70 dark:bg-black/20 p-3 space-y-2">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[9px] tracking-[0.2em] uppercase text-black/40 dark:text-white/30">YouTube Query</span>
+                          <input
+                            value={replayDraft.payload.query}
+                            onChange={(e) =>
+                              setReplayDraft((draft) =>
+                                draft && draft.payload.kind === "youtube_play"
+                                  ? { ...draft, payload: { ...draft.payload, query: e.target.value } }
+                                  : draft
+                              )
+                            }
+                            className="rounded-[10px] border border-black/20 dark:border-white/15 bg-white dark:bg-[#111] px-3 py-2 text-[12px] text-black dark:text-white"
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 pt-1">
+                    <div className="text-[10px] text-black/45 dark:text-white/35">
+                      Replay uses the edited payload directly. Removed steps will not run.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={runEditedReplay}
+                      disabled={
+                        isBusy ||
+                        !!activePlan ||
+                        (replayDraft.payload.kind === "desktop_task" && replayDraft.payload.actions.length === 0) ||
+                        (replayDraft.payload.kind === "research" && replayDraft.payload.steps.length === 0) ||
+                        (replayDraft.payload.kind === "youtube_play" && !replayDraft.payload.query.trim())
+                      }
+                      className="text-[10px] tracking-[0.18em] uppercase px-3 py-2 rounded-[10px] border border-black dark:border-[#e8e8e8] bg-black dark:bg-[#e8e8e8] text-white dark:text-black disabled:opacity-30"
+                    >
+                      Replay Edited Plan
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
 
           {brainModal && (

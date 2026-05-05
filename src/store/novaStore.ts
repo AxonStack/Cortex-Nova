@@ -1,5 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { ApprovalPreview } from "../lib/appAdapters";
+
+export interface ApprovalRequest {
+  id: string;
+  preview: ApprovalPreview;
+}
 
 export type NovaStatus = "idle" | "listening" | "processing" | "speaking" | "error";
 export type AIProvider = "anthropic" | "openai" | "ollama" | "claude_cli" | "codex_cli";
@@ -33,6 +39,53 @@ export interface ActivePlan {
   topic: string;
   type: "research" | "youtube_play" | "desktop_task";
   steps: PlanStep[];
+}
+
+export type ReplayDesktopAction =
+  | { id: string; kind: "desktop_open_app"; app: string; label: string }
+  | { id: string; kind: "desktop_close_app"; app: string; label: string }
+  | { id: string; kind: "browser_navigate"; url: string; label: string }
+  | { id: string; kind: "desktop_focus_window"; name: string; label: string }
+  | { id: string; kind: "desktop_press_key"; keys: string; label: string }
+  | { id: string; kind: "desktop_type_text"; text: string; label: string }
+  | { id: string; kind: "desktop_mouse_click"; x: number; y: number; label: string };
+
+export interface ReplayResearchStep {
+  id: string;
+  label: string;
+  detail: string;
+  url: string;
+  delayMs: number;
+}
+
+export type TaskReplayPayload =
+  | { kind: "desktop_task"; actions: ReplayDesktopAction[] }
+  | { kind: "youtube_play"; query: string }
+  | { kind: "research"; steps: ReplayResearchStep[] };
+
+export interface TaskReplayDraft {
+  title: string;
+  sourceCommand: string;
+  payload: TaskReplayPayload;
+}
+
+export type TaskContextStatus = "running" | "completed" | "failed" | "interrupted";
+
+export interface TaskContext {
+  id: string;
+  sourceCommand: string;
+  title: string;
+  topic: string;
+  type: ActivePlan["type"];
+  status: TaskContextStatus;
+  startedAt: number;
+  updatedAt: number;
+  summary?: string;
+  lastError?: string;
+  completedSteps: number;
+  totalSteps: number;
+  planSnapshot: ActivePlan;
+  replayPayload: TaskReplayPayload;
 }
 
 export interface ProviderConfig {
@@ -98,6 +151,7 @@ interface NovaState {
   actionLog: ActionLogEntry[];
   sessionStart: number;
   activePlan: ActivePlan | null;
+  taskContext: TaskContext | null;
 
   providerConfig: ProviderConfig;
   permissions: AutomationPermissions;
@@ -120,6 +174,10 @@ interface NovaState {
   setPlan: (plan: ActivePlan | null) => void;
   updatePlanStep: (stepId: string, status: PlanStepStatus, detail?: string) => void;
   clearPlan: () => void;
+  beginTaskContext: (sourceCommand: string, plan: ActivePlan, replayPayload: TaskReplayPayload) => void;
+  syncTaskPlan: (plan: ActivePlan) => void;
+  finishTaskContext: (status: Extract<TaskContextStatus, "completed" | "failed" | "interrupted">, summary: string) => void;
+  clearTaskContext: () => void;
   saveProviderConfig: (config: ProviderConfig) => void;
   setPermission: (key: keyof AutomationPermissions, value: boolean) => void;
   setAppPolicyMode: (mode: AppPolicy["mode"]) => void;
@@ -134,6 +192,9 @@ interface NovaState {
   deleteMacro: (id: string) => void;
   markWorkflowRun: (id: string) => void;
   markWorkflowOutcome: (id: string, success: boolean) => void;
+
+  pendingApproval: ApprovalRequest | null;
+  setPendingApproval: (req: ApprovalRequest | null) => void;
 }
 
 const DEFAULT_PERMISSIONS: AutomationPermissions = {
@@ -143,6 +204,10 @@ const DEFAULT_PERMISSIONS: AutomationPermissions = {
   keyboardMouseControl: false,
 };
 const DEFAULT_APP_POLICY: AppPolicy = { mode: "off", entries: [] };
+
+function countDoneSteps(plan: ActivePlan): number {
+  return plan.steps.filter((step) => step.status === "done").length;
+}
 
 export const useNovaStore = create<NovaState>()(
   persist(
@@ -156,6 +221,7 @@ export const useNovaStore = create<NovaState>()(
       actionLog: [],
       sessionStart: Date.now(),
       activePlan: null,
+      taskContext: null,
 
       providerConfig: DEFAULT_PROVIDER_CONFIG,
       permissions: DEFAULT_PERMISSIONS,
@@ -165,6 +231,7 @@ export const useNovaStore = create<NovaState>()(
       theme: "light",
       backgroundListening: false,
       learnedMacros: [],
+      pendingApproval: null,
 
       setStatus: (status) => set({ status }),
       setTranscript: (transcript) => set({ transcript }),
@@ -194,6 +261,53 @@ export const useNovaStore = create<NovaState>()(
           };
         }),
       clearPlan: () => set({ activePlan: null }),
+      beginTaskContext: (sourceCommand, plan, replayPayload) =>
+        set({
+          taskContext: {
+            id: crypto.randomUUID(),
+            sourceCommand: sourceCommand.trim(),
+            title: plan.title,
+            topic: plan.topic,
+            type: plan.type,
+            status: "running",
+            startedAt: Date.now(),
+            updatedAt: Date.now(),
+            completedSteps: countDoneSteps(plan),
+            totalSteps: plan.steps.length,
+            planSnapshot: plan,
+            replayPayload,
+          },
+        }),
+      syncTaskPlan: (plan) =>
+        set((s) => {
+          if (!s.taskContext) return {};
+          return {
+            taskContext: {
+              ...s.taskContext,
+              title: plan.title,
+              topic: plan.topic,
+              type: plan.type,
+              updatedAt: Date.now(),
+              completedSteps: countDoneSteps(plan),
+              totalSteps: plan.steps.length,
+              planSnapshot: plan,
+            },
+          };
+        }),
+      finishTaskContext: (status, summary) =>
+        set((s) => {
+          if (!s.taskContext) return {};
+          return {
+            taskContext: {
+              ...s.taskContext,
+              status,
+              updatedAt: Date.now(),
+              summary,
+              lastError: status === "failed" ? summary : undefined,
+            },
+          };
+        }),
+      clearTaskContext: () => set({ taskContext: null }),
       saveProviderConfig: (config) => set({ providerConfig: config, isSetupComplete: true }),
       setPermission: (key, value) =>
         set((s) => ({ permissions: { ...s.permissions, [key]: value } })),
@@ -241,6 +355,7 @@ export const useNovaStore = create<NovaState>()(
               : m
           ),
         })),
+      setPendingApproval: (pendingApproval) => set({ pendingApproval }),
     }),
     {
       name: "nova-config",
@@ -253,7 +368,31 @@ export const useNovaStore = create<NovaState>()(
         theme: state.theme,
         backgroundListening: state.backgroundListening,
         learnedMacros: state.learnedMacros,
+        taskContext: state.taskContext,
       }),
+      merge: (persistedState, currentState) => {
+        const merged = { ...currentState, ...(persistedState as Partial<NovaState>) };
+        const persistedTask = (persistedState as Partial<NovaState> | undefined)?.taskContext;
+        if (persistedTask && persistedTask.status === "running") {
+          merged.taskContext = {
+            ...persistedTask,
+            status: "interrupted",
+            updatedAt: Date.now(),
+            summary: persistedTask.summary ?? `Task interrupted after restart: ${persistedTask.title}`,
+          };
+        } else if (persistedTask && !persistedTask.replayPayload) {
+          merged.taskContext = {
+            ...persistedTask,
+            replayPayload:
+              persistedTask.type === "youtube_play"
+                ? { kind: "youtube_play", query: persistedTask.topic }
+                : persistedTask.type === "research"
+                ? { kind: "research", steps: [] }
+                : { kind: "desktop_task", actions: [] },
+          };
+        }
+        return merged;
+      },
     }
   )
 );
